@@ -13,7 +13,7 @@ because the server was the only thing that ever knew.
 ```
 npm install
 npm run dev     # http://localhost:3000
-npm test        # 66 tests, under a second
+npm test        # 71 tests, under a second
 npm run demo    # the whole story over the HTTP API, in curl (needs the dev server running)
 ```
 
@@ -205,10 +205,19 @@ crash after charging is recoverable rather than silent.
 
 ## Security
 
-The link is the credential: anyone with the URL can act on the session. IDs are unguessable
-and carry no personal information, but there is no check that the person holding the link is
-the person who started the checkout — a signed, short-lived token would be the first thing to
-add. Holds also cost nothing to create, so someone could take seats off the market in bulk; a
+The link is the credential: anyone with the URL can act on the session, and there is no check
+that the person holding it is the person who started the checkout. A signed, short-lived token
+would be the first thing to add.
+
+Session IDs make that worse, deliberately and visibly: they are `cs_0001`, `cs_0002`, so the
+whole store can be walked by counting. That is a demo affordance, not an oversight — readable
+IDs are most of what makes `scripts/demo.sh` and the session inspector legible, and this is a
+prototype with no real fan data in it. It is also the single change I would make first, and it
+is one line in `stubs.ts`: `ids.next` returns the counter, and returning a UUIDv7 instead
+(`src/lib/uuid.ts`, already used for idempotency keys) closes enumeration without touching
+anything else. Nothing carries personal information either way.
+
+Holds also cost nothing to create, so someone could take seats off the market in bulk; a
 per-person limit and rate limiting are the fix, and both need a notion of who someone is,
 which is out of scope here.
 

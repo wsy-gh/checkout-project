@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
-import { randomUUID } from "node:crypto";
 import { isCheckoutError, type Surface } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
+import { uuidv7 } from "@/lib/uuid";
 
 /**
  * Load everything a checkout page needs, on the server, before any HTML is sent.
@@ -34,7 +34,14 @@ export async function loadCheckoutPage(id: string, surface: Surface) {
       // Generating it on the server also avoids a subtle rendering bug: a value invented in
       // the browser would differ from the one in the server's HTML, and React would complain
       // that the two do not match.
-      idempotencyKey: randomUUID(),
+      //
+      // It is a UUIDv7 rather than the v4 `crypto.randomUUID()` returns, so the key sorts by
+      // the moment it was minted. Nothing here depends on that — the keys live in a Map that
+      // is discarded on restart — but these are exactly the values that end up as a database
+      // column and in other systems' logs, where random ordering is expensive to undo later.
+      // See src/lib/uuid.ts. The time comes from the injected clock like every other instant
+      // in this app, so a test that fast-forwards gets keys that agree with its own timeline.
+      idempotencyKey: uuidv7(stubs.clock.now()),
     };
   } catch (e) {
     if (isCheckoutError(e) && e.code === "NOT_FOUND") notFound();
