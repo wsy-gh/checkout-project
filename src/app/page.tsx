@@ -26,8 +26,8 @@ export default function Home() {
         </div>
       ))}
       <p className="links">
-        <a href="/api/debug/events">event log</a>
-        <a href="/api/debug/state">stub state</a>
+        <Link href="/api/debug/events">event log</Link>
+        <Link href="/api/debug/state">stub state</Link>
       </p>
     </main>
   );

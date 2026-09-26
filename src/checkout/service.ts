@@ -50,10 +50,9 @@ export function createCheckout(deps: Deps) {
 
   /** Drop variant-specific fields so a spread cannot smuggle e.g. orderId into FAILED. */
   function strip(s: Session) {
-    const {
-      status: _status,
-      ...rest
-    } = s as Session & Partial<Record<"paymentIntentId" | "pendingSince" | "orderId" | "failReason" | "successorSessionId", unknown>>;
+    const rest = { ...s } as Partial<Session> &
+      Partial<Record<"paymentIntentId" | "pendingSince" | "orderId" | "failReason" | "successorSessionId", unknown>>;
+    delete rest.status;
     delete rest.paymentIntentId;
     delete rest.pendingSince;
     delete rest.orderId;
@@ -215,6 +214,7 @@ export function createCheckout(deps: Deps) {
     priceChange,
     /** Test/debug only. */
     _all: () => [...db.values()],
+    _reset: () => db.clear(),
     _isTerminal: (s: Session) => TERMINAL.has(s.status),
   };
 }

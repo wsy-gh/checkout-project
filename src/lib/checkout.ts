@@ -13,8 +13,11 @@ const g = globalThis as unknown as { __checkout?: Checkout; __stubs?: Stubs };
 export const stubs: Stubs = (g.__stubs ??= makeStubs());
 export const checkout: Checkout = (g.__checkout ??= createCheckout(stubs));
 
-/** Reset everything. Used by the demo script and tests that go through HTTP. */
+/**
+ * Reset everything IN PLACE. Replacing the instances would strand modules that already
+ * imported them (route handlers and pages are separate module graphs in dev).
+ */
 export function resetAll() {
-  g.__stubs = makeStubs();
-  g.__checkout = createCheckout(g.__stubs);
+  stubs.reset();
+  checkout._reset();
 }

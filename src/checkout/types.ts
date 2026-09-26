@@ -114,7 +114,8 @@ export interface Deps {
     salesCutoff(listingId: string): number;
   };
   payments: {
-    charge(intentId: string, token: string): Promise<PaymentOutcome>;
+    /** `token` is what provider-hosted fields hand back; the stub ignores it. */
+    charge(intentId: string, token?: string): Promise<PaymentOutcome>;
     status(intentId: string): Promise<PaymentOutcome>;
   };
   events: { emit(name: string, data: Record<string, unknown>): void };

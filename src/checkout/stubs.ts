@@ -22,32 +22,43 @@ export type Listing = {
 const MIN = 60_000;
 
 export function makeStubs(opts: { now?: number } = {}) {
+  // All mutable state lives here so reset() can rebuild it IN PLACE. The stub objects
+  // themselves are never replaced: singletons on globalThis must stay the same references.
+  const state = { t: 0, frozen: false, offset: 0, n: 0, listings: new Map<string, Listing>(), intents: new Map<string, PaymentOutcome>() };
+
+  function seed() {
+    state.t = opts.now ?? Date.now();
+    state.frozen = opts.now !== undefined;
+    state.offset = 0;
+    state.n = 0;
+    state.intents = new Map();
+    const base = clock.now();
+    state.listings = new Map(
+      [
+        { id: "L1", eventName: "Warriors vs Lakers", section: "Sec 118, Row 12", available: 4, total: 8900, eventStartsAt: base + 90 * MIN },
+        { id: "L2", eventName: "Giants vs Dodgers", section: "Club Level 214", available: 2, total: 6400, eventStartsAt: base + 25 * MIN },
+        { id: "L3", eventName: "Sharks vs Kings", section: "Sec 209", available: 1, total: 4200, eventStartsAt: base + 6 * 60 * MIN },
+      ].map((l) => [l.id, { ...l, priceVersion: 1, withdrawn: false, cutoffLeadMs: 5 * MIN }]),
+    );
+  }
+
   // ---- clock: manual, so tests and the demo can jump forward ----
-  let t = opts.now ?? Date.now();
-  let frozen = opts.now !== undefined;
   const clock = {
-    now: () => (frozen ? t : Date.now() + offset),
+    now: () => (state.frozen ? state.t : Date.now() + state.offset),
     advance(ms: number) {
-      if (frozen) t += ms;
-      else offset += ms;
+      if (state.frozen) state.t += ms;
+      else state.offset += ms;
     },
-    freeze(at: number) { frozen = true; t = at; },
+    freeze(at: number) { state.frozen = true; state.t = at; },
   };
-  let offset = 0;
 
   // ---- ids ----
-  let n = 0;
-  const ids = { next: (prefix: string) => `${prefix}_${(++n).toString(36).padStart(4, "0")}` };
+  const ids = { next: (prefix: string) => `${prefix}_${(++state.n).toString(36).padStart(4, "0")}` };
+
+  seed();
 
   // ---- inventory + pricing share the listing table ----
-  const base = clock.now();
-  const listings = new Map<string, Listing>(
-    [
-      { id: "L1", eventName: "Warriors vs Lakers", section: "Sec 118, Row 12", available: 4, total: 8900, eventStartsAt: base + 90 * MIN },
-      { id: "L2", eventName: "Giants vs Dodgers", section: "Club Level 214", available: 2, total: 6400, eventStartsAt: base + 25 * MIN },
-      { id: "L3", eventName: "Sharks vs Kings", section: "Sec 209", available: 1, total: 4200, eventStartsAt: base + 6 * 60 * MIN },
-    ].map((l) => [l.id, { ...l, priceVersion: 1, withdrawn: false, cutoffLeadMs: 5 * MIN }]),
-  );
+  const listings = { get: (id: string) => state.listings.get(id), has: (id: string) => state.listings.has(id), values: () => state.listings.values() };
   const need = (id: string) => {
     const l = listings.get(id);
     if (!l) throw new Error(`unknown listing ${id}`);
@@ -82,13 +93,13 @@ export function makeStubs(opts: { now?: number } = {}) {
   };
 
   // ---- payments: scripted outcomes ----
-  const intents = new Map<string, PaymentOutcome>();
+  const intents = { get: (k: string) => state.intents.get(k), set: (k: string, v: PaymentOutcome) => state.intents.set(k, v) };
   const payments = {
     /** Outcome of the next charge(). 'lost' = charge succeeds provider-side but the response never arrives. */
     nextResult: "ok" as PaymentOutcome | "lost",
     /** Simulated provider latency; > 0 forces a real event-loop yield inside charge(). */
     delayMs: 0,
-    async charge(intentId: string, _token: string): Promise<PaymentOutcome> {
+    async charge(intentId: string): Promise<PaymentOutcome> {
       if (payments.delayMs > 0) await new Promise((r) => setTimeout(r, payments.delayMs));
       else await Promise.resolve(); // still yield once, so interleaving is possible
       const r = payments.nextResult;
@@ -134,8 +145,16 @@ export function makeStubs(opts: { now?: number } = {}) {
     pendingTimeoutMs: 2 * MIN,
   };
 
+  /** Rebuild all stub state in place. */
+  function reset() {
+    seed();
+    payments.nextResult = "ok";
+    payments.delayMs = 0;
+    events.clear();
+  }
+
   const deps: Deps = { clock, ids, pricing, inventory, payments, events, policy };
-  return { ...deps, clock, ids, pricing, inventory, payments, events, notifier, policy };
+  return { ...deps, clock, ids, pricing, inventory, payments, events, notifier, policy, reset };
 }
 
 export type Stubs = ReturnType<typeof makeStubs>;
