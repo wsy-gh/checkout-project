@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { randomUUID } from "node:crypto";
-import { CheckoutError, type Surface } from "@/checkout/types";
+import { isCheckoutError, type Surface } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
 
 /**
@@ -20,7 +20,7 @@ export async function loadCheckoutPage(id: string, surface: Surface) {
       idempotencyKey: randomUUID(),
     };
   } catch (e) {
-    if (e instanceof CheckoutError && e.code === "NOT_FOUND") notFound();
+    if (isCheckoutError(e) && e.code === "NOT_FOUND") notFound();
     throw e;
   }
 }

@@ -78,6 +78,7 @@ export type PriceChange = { from: number; to: number; newPriceVersion: number };
  * rendering `session`. `code` only picks the copy and the primary action.
  */
 export class CheckoutError extends Error {
+  readonly isCheckoutError = true as const;
   constructor(
     public readonly code: ErrorCode,
     public readonly session?: Session,
@@ -86,6 +87,15 @@ export class CheckoutError extends Error {
     super(code);
     this.name = "CheckoutError";
   }
+}
+
+/**
+ * Identify a CheckoutError by its brand, not by `instanceof`. The domain, the Route
+ * Handlers and the Server Actions can be bundled into separate chunks, each with its
+ * own copy of the class — `instanceof` is then false across that boundary in production.
+ */
+export function isCheckoutError(e: unknown): e is CheckoutError {
+  return typeof e === "object" && e !== null && (e as { isCheckoutError?: unknown }).isCheckoutError === true;
 }
 
 export type CreateInput = { listingId: string; quantity: number; surface: Surface };

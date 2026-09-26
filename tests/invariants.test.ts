@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assertInvariants } from "@/checkout/invariants";
-import { CheckoutError, type Session } from "@/checkout/types";
+import { isCheckoutError, type Session } from "@/checkout/types";
 import { MIN, fresh } from "./helpers";
 
 // Scenario 16. A property-style test: random operation sequences, and after every step
@@ -54,7 +54,7 @@ describe("invariants under random operation sequences", () => {
             case "rehold": if (id) { const s = checkout.rehold(id); ids.push(s.id); } break;
           }
         } catch (e) {
-          if (!(e instanceof CheckoutError)) throw e; // domain rejections are expected; anything else is a bug
+          if (!isCheckoutError(e)) throw e; // domain rejections are expected; anything else is a bug
         }
 
         // Per-session invariants

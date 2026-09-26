@@ -1,6 +1,6 @@
 import { createCheckout } from "@/checkout/service";
 import { makeStubs } from "@/checkout/stubs";
-import { CheckoutError, type CompleteInput, type Session } from "@/checkout/types";
+import { isCheckoutError, type CheckoutError, type CompleteInput, type Session } from "@/checkout/types";
 
 export const T0 = 1_700_000_000_000; // a fixed "now" so every test is deterministic
 export const MIN = 60_000;
@@ -20,7 +20,7 @@ export async function rejects(p: Promise<unknown>): Promise<CheckoutError> {
   try {
     await p;
   } catch (e) {
-    if (e instanceof CheckoutError) return e;
+    if (isCheckoutError(e)) return e;
     throw e;
   }
   throw new Error("expected a CheckoutError");

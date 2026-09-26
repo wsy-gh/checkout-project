@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { stubs } from "@/lib/checkout";
 
+// Reads live availability and the server clock, so it must not be prerendered at build.
+export const dynamic = "force-dynamic";
+
 // Home: a tiny "event page" so the demo starts somewhere. Lists the seeded listings.
 export default function Home() {
   const listings = stubs.inventory.all();

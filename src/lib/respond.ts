@@ -1,4 +1,4 @@
-import { CheckoutError, HTTP_STATUS, type Session } from "@/checkout/types";
+import { HTTP_STATUS, isCheckoutError, type CheckoutError, type Session } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
 
 /** Every session response, success or failure, has this shape. Clients render `session`. */
@@ -24,7 +24,7 @@ export async function respond(fn: () => Promise<Session> | Session): Promise<Res
   try {
     return Response.json(envelope(await fn()), { headers: NO_STORE });
   } catch (e) {
-    if (e instanceof CheckoutError) {
+    if (isCheckoutError(e)) {
       const body = { code: e.code, serverNow: stubs.clock.now(), ...(e.session ? envelope(e.session) : {}), ...e.extra };
       return Response.json(body, { status: HTTP_STATUS[e.code], headers: NO_STORE });
     }

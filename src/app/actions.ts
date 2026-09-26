@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { CheckoutError, type ErrorCode, type Surface } from "@/checkout/types";
+import { isCheckoutError, type ErrorCode, type Surface } from "@/checkout/types";
 import { checkout } from "@/lib/checkout";
 
 /**
@@ -22,7 +22,7 @@ export async function createSession(formData: FormData): Promise<void> {
       surface,
     }).id;
   } catch (e) {
-    if (e instanceof CheckoutError) redirect(`/listing/${formData.get("listingId")}?error=${e.code}`);
+    if (isCheckoutError(e)) redirect(`/listing/${formData.get("listingId")}?error=${e.code}`);
     throw e;
   }
   redirect(surface === "mobile" ? `/m/checkout/${id}` : `/checkout/${id}`);
@@ -39,7 +39,7 @@ export async function pay(_prev: ActionState, formData: FormData): Promise<Actio
       surface: formData.get("surface") === "mobile" ? "mobile" : "web",
     });
   } catch (e) {
-    if (e instanceof CheckoutError) return refreshWith({ code: e.code }, formData);
+    if (isCheckoutError(e)) return refreshWith({ code: e.code }, formData);
     throw e;
   }
   return refreshWith({ ok: true }, formData);
@@ -54,7 +54,7 @@ export async function acceptPrice(formData: FormData): Promise<void> {
       surface: formData.get("surface") === "mobile" ? "mobile" : "web",
     });
   } catch (e) {
-    if (!(e instanceof CheckoutError)) throw e; // any rejection: the page re-renders from the truth
+    if (!isCheckoutError(e)) throw e; // any rejection: the page re-renders from the truth
   }
   redirect(pathFor(formData));
 }
