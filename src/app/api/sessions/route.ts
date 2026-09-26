@@ -8,7 +8,16 @@ export async function POST(req: Request) {
   const res = await respond(() =>
     checkout.create({
       listingId: String(body.listingId ?? ""),
-      quantity: Math.max(1, Number(body.quantity ?? 1)),
+      // An absent quantity means one ticket. A quantity that is *present* is used exactly as
+      // sent — no clamping, and no coercing a bad value into a good one. `Math.max(1, NaN)`
+      // is NaN, and NaN slips past `available < quantity` because every comparison with NaN
+      // is false, so a clamp here once corrupted the seat counter.
+      //
+      // `?? 1` used to cover both cases, which quietly made `{"quantity": null}` a purchase
+      // of one ticket. Absent and null are not the same thing: one is a client leaving a
+      // default alone, the other is a client sending a value that is not a quantity. Only the
+      // first gets a default. `Number(null)` is 0, which the domain refuses.
+      quantity: body.quantity === undefined ? 1 : Number(body.quantity),
       surface: body.surface === "mobile" ? "mobile" : "web",
     }),
   );

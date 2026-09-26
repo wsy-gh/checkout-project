@@ -1,227 +1,243 @@
 # Checkout Continuity
 
-A prototype of a ticket checkout that a fan can start on one surface and finish on another — web to mobile or back — without duplicate orders, without holding stale inventory forever, and without hiding a price change.
+A fan starts buying tickets on their laptop, gets interrupted, and finishes on their phone —
+without being charged twice, without seats being held forever, and without a price change
+slipping past them.
 
-The whole thing is one idea: **a checkout session is a coat-check ticket with a timer.** The server holds the seats and owns the clock. A device holds only the claim number. Any surface that presents the number gets the truth, and every attempt to change the truth says which version it last saw.
+The whole design follows from one decision: **the server owns everything, and a device holds
+nothing but an ID.** Seats, price, and the deadline all live in one record on the server. A
+browser is given that record's ID and nothing else. "Resuming on your phone" is then not a
+feature that needs building — the phone asks about the same ID and gets the same answer,
+because the server was the only thing that ever knew.
 
 ```
 npm install
-npm run dev          # http://localhost:3000
-npm test             # 31 scenario / concurrency / invariant tests, < 1s
-npm run demo         # walks the cross-surface story over the HTTP API (needs the dev server)
+npm run dev     # http://localhost:3000
+npm test        # 66 tests, under a second
+npm run demo    # the whole story over the HTTP API, in curl (needs the dev server running)
 ```
 
-Then open a listing, start checkout on web, and click **"Open this session on mobile →"**. Use the debug knobs below to change the price, withdraw the listing, or advance the clock while a session is open, and reload either surface.
+Start a checkout on web, then click **"Open this session on mobile ↗"**, which opens a second
+tab so you can watch one session live in two places. Each checkout page has a dev-only
+**session inspector** that explains the three fields the whole thing runs on, with something
+to try for each. The debug knobs change the price, pull the listing, or move the clock
+forward underneath both tabs.
 
-> Requires Node 20+. Everything is in memory; restarting the server resets the world.
+> Node 20+. Everything is in memory, so restarting the server resets the world.
 
----
+### Reading order
 
-## What's here
+The code is commented to be read start to finish. This order works best:
 
-| Path | What |
+| | |
 |---|---|
-| `src/checkout/` | The domain. No framework imports. `types.ts` (state model), `service.ts` (the state machine), `stubs.ts` (inventory / pricing / payments / clock), `invariants.ts` |
-| `src/app/api/sessions/` | The HTTP API: create, resume, accept-price, complete, rehold |
-| `src/app/checkout/[id]` | Web surface (Server Component) |
-| `src/app/m/checkout/[id]` | Simulated mobile surface — same session, phone frame, mobile copy |
-| `src/app/deeplink/[id]` | Stand-in for `gametime://checkout/:id`; 302s to the mobile route |
-| `src/app/actions.ts` | Server Actions: the web form's transport, thin over the same domain calls |
-| `src/app/_components/` | `RecoveryState` (one switch on status), `Countdown`, `PayForm` |
-| `src/lib/checkout.ts` | The in-memory singleton, parked on `globalThis` |
-| `tests/` | Scenarios 1–16 from the table below, plus concurrency and property tests |
-| `scripts/demo.sh` | The story, in curl |
-| `docs/decisions.md` | Why each rule is the way it is, with sources |
+| [`src/checkout/types.ts`](src/checkout/types.ts) | What a session is. Start here — the rest makes more sense once you know the shape. |
+| [`src/checkout/service.ts`](src/checkout/service.ts) | Every rule in the app. The header explains why this file is so careful about `await`. |
+| [`src/checkout/invariants.ts`](src/checkout/invariants.ts) | The things that must never stop being true, checked on every write. |
+| [`tests/concurrency.test.ts`](tests/concurrency.test.ts) | The races, genuinely interleaved rather than described. |
+| [`tests/api.test.ts`](tests/api.test.ts) | The HTTP contract: status codes, the envelope, `no-store`. |
+| [`docs/decisions.md`](docs/decisions.md) | Why each rule is the way it is, with sources. |
 
----
-
-## Assumptions
-
-A take-home doesn't let you ask, so here are the questions I'd have asked and the answer I chose.
-
-| Question | Assumption |
-|---|---|
-| How long is a hold? Does it shrink near event start? | 10 min; 5 min inside the last hour; 2 min inside the last 15. Always capped at the sales cutoff. It's one policy function (`stubs.ts → policy.holdWindowMs`). |
-| Does a price *decrease* need acceptance? | Yes. The invariant "the amount charged is a total the fan saw" is simpler than special-casing decreases. Product could relax it. |
-| Can a hold be extended? | No. Longer holds help the holder and hurt everyone else. Documented as a policy knob. |
-| Can the fan change quantity mid-session? | No. A session is immutable except status and price; a quantity change is a new session. |
-| Does completion need a payment webhook? | In production, yes. Here the stub is awaited, and **reconcile-on-read** stands in for the webhook: a `GET` on a pending session asks the provider. |
-| Which surface is canonical for confirmation? | Neither. Any surface that reads a `COMPLETED` session shows the confirmation. |
-| What if the listing is withdrawn mid-hold? | The session fails with its own reason and offers similar listings. Seats are never silently swapped. |
-| Is payment info portable across surfaces? | No. The session stores no payment details. Each surface collects payment fresh. |
-| Who owns a session? | Out of scope. The link is bearer auth — see *Threat model*. |
-
-## Non-goals
-
-No real auth, no real payments, no database, no seat map, no cart, no native app, no push infrastructure. Each would add a day and no continuity signal. The migration path for the ones that matter is in *With more time*.
+Also: [assumptions and non-goals](docs/assumptions.md) · [scenario list](docs/scenarios.md)
 
 ---
 
 ## The state model
 
 ```
-                    price change → accept-price (stays ACTIVE, priceVersion++)
+                    price changes → fan accepts it (stays ACTIVE, new price recorded)
                     ┌──────────────┐
                     │              │
    create ───────►  ACTIVE ◄───────┘
                       │  │
-     now ≥ holdExpiresAt │  └── complete (CAS ok) ───► PAYMENT_PENDING
-     or listing withdrawn│                                │        │
-                      ▼                        charge ok  │        │ declined / pending timeout
-                   EXPIRED                                ▼        ▼
-              (or FAILED/INVENTORY_WITHDRAWN)        COMPLETED    FAILED
-              (successorSessionId?)                 (orderId)   (failReason, hold released)
+      deadline passes │  └── fan pays ──────────► PAYMENT_PENDING
+   or listing pulled  │                            │              │
+                      ▼                  charge ok │              │ declined, or no answer
+                   EXPIRED                         ▼              ▼   for too long
+              (or FAILED)                      COMPLETED       FAILED
 ```
 
-```ts
-CheckoutSession {
-  id, listingId, quantity
-  quotedTotal, priceVersion      // snapshot at creation; the TOTAL is what's versioned
-  holdExpiresAt                  // = min(now + window(timeToEvent), event.salesCutoff)
-  status: ACTIVE | PAYMENT_PENDING | COMPLETED | EXPIRED | FAILED
-  failReason?: DECLINED | PENDING_TIMEOUT | INVENTORY_WITHDRAWN
-  version                        // bumps on every mutation; clients send back what they saw
-  paymentIntentId?               // written BEFORE the charge is attempted
-  orderId?                       // set exactly once
-  idempotency: { [key]: outcome }// replay table
-  successorSessionId?            // set when re-held after expiry
-  createdOn, lastSeenOn          // telemetry — does NOT bump version
-  // never: card, paymentToken, or any payment-method detail
-}
-```
+A session is declared in [`types.ts`](src/checkout/types.ts) as a set of alternatives rather
+than one type with optional fields, so a completed session always has an order ID and a
+failed one always has a reason. Those combinations are not "checked" anywhere — they simply
+cannot be built.
 
-It's a discriminated union in TypeScript (`src/checkout/types.ts`): a `COMPLETED` session without an `orderId` cannot be constructed, and the UI's switch on status has no `default` branch, so adding a status without handling it is a compile error.
+Five rules do most of the work:
 
-### Five rules that make it work
-
-1. **Expiry is a predicate, not a job.** "Valid" means `ACTIVE && now < holdExpiresAt && listing still backs it`. Nothing has to fire when the deadline passes; the next read turns it into `EXPIRED` and releases the seats. A sweeper would be garbage collection, not correctness.
-2. **`PAYMENT_PENDING` is exempt from the clock.** Once a charge is in flight, the hold is frozen. It resolves by payment outcome — or by reconcile-on-read after a pending timeout — never by expiry. Otherwise a seat can be released and resold while the first fan's card is being charged.
-3. **Payment has three outcomes, not two.** `ok`, `declined`, and `unknown` (timeout, provider 5xx). Declined is safe to retry. Unknown is not: the UI says "we're confirming — don't retry," and reconcile-on-read settles it. Treating unknown as failed is how fans get charged twice.
-4. **The session is the hold.** Inventory and the session are mutated in one synchronous store function. Split them into two stores and you get the crash-between-two-writes bug Shopify wrote up (see `docs/decisions.md`).
-5. **Price is a snapshot of the total.** Fees and delivery are part of it. It only changes through an explicit `accept-price`. The amount charged is always a total the fan saw.
-
----
+1. **A hold expires by being noticed, not by a timer.** Nothing runs in the background. A
+   session is expired the moment somebody reads it after its deadline, which means there is
+   never a gap where the clock has passed but the cleanup hasn't run. The one thing this
+   misses is the seat *count*, which only finds out when someone reads the session — and
+   nobody ever reads the session of a fan who closed their tab. So anything that displays or
+   consumes seat counts checks the deadlines first.
+2. **A payment in flight ignores the clock.** Once a charge has started, the deadline stops
+   applying. Otherwise the timer could hand the seats to someone else while the first fan's
+   card was being charged, and sell the same seats twice. A payment ends when the provider
+   says so.
+3. **A charge has three outcomes, not two.** It worked, it was declined, or *we don't know*.
+   A declined card is safe to retry because no money moved. A timeout is not, because it may
+   have. Telling someone "that failed, try again" when we don't actually know is how people
+   get billed twice.
+4. **The seats and the session are written together.** One function, no pausing in the
+   middle. Keep them in separate systems and a crash between the two writes leaves seats that
+   nobody holds and nobody can buy.
+5. **The price the fan sees is the price they pay.** A quote never updates silently. If the
+   listing's price moves, the fan is shown both numbers and has to accept the new one.
 
 ## The API
 
-Every response — success or rejection — carries `{ session, serverNow, priceChange? }`. Rejections add a machine-readable `code`. A client can always recover by rendering `session`; `code` only picks the copy and the primary action.
+Every response carries the full session, whether the request succeeded or not. That means a
+client never has to ask a second question to find out where it stands — it can always just
+redraw from what it was handed. Failures add a short code that picks the wording and the
+button, nothing more.
 
 ```
-POST /api/sessions                      { listingId, quantity, surface }         → 201
-GET  /api/sessions/:id?surface=          resume; reconciles expiry / withdrawal / pending
-POST /api/sessions/:id/accept-price     { version, priceVersion }
-POST /api/sessions/:id/complete         { version, priceVersion, idempotencyKey, paymentToken }
-POST /api/sessions/:id/rehold           from EXPIRED → a fresh session (idempotent)
+POST /api/sessions                    { listingId, quantity, surface }              → 201
+GET  /api/sessions/:id?surface=        resume: read it, and bring it up to date
+POST /api/sessions/:id/accept-price   { version, priceVersion }
+POST /api/sessions/:id/complete       { version, priceVersion, idempotencyKey, paymentToken }
+POST /api/sessions/:id/rehold          start a fresh session after one expired
 ```
 
-| Code | HTTP | Meaning |
-|---|---|---|
-| `NOT_FOUND` | 404 | unknown session |
-| `STALE_VERSION` | 409 | client's `version` ≠ server's (ahead *or* behind) |
-| `PRICE_CHANGED` | 409 | includes `priceChange {from, to, newPriceVersion}` |
-| `EXPIRED` | 409 | hold ended; `session.successorSessionId` if re-held |
-| `IN_PROGRESS_ELSEWHERE` | 409 | payment in flight on another surface |
-| `ALREADY_COMPLETED` / `ALREADY_FAILED` | 409 | terminal |
-| `INVENTORY_WITHDRAWN` | 409 | seller delisted while ACTIVE |
-| `SOLD_OUT` | 409 | on create |
-| `PAYMENT_DECLINED` | 402 | safe to retry with another method |
+`INVALID_REQUEST` 400 · `NOT_FOUND` 404 · `PAYMENT_DECLINED` 402 · and 409 for
+`STALE_VERSION`, `PRICE_CHANGED`, `EXPIRED`, `IN_PROGRESS_ELSEWHERE`, `ALREADY_COMPLETED`,
+`ALREADY_FAILED`, `INVENTORY_WITHDRAWN` (which brings other listings with it), `SOLD_OUT`,
+`SALES_CLOSED`.
 
-**Debug knobs** (dev only): `GET /api/debug/events`, `GET /api/debug/state`, and `POST /api/debug/{advance|price|withdraw|restore|payment|reset}`. `scripts/demo.sh` shows every one in use.
+The rule behind that table: `complete` answers 2xx only when the session it hands back is the
+result of *this* attempt — paid, or still confirming. A session that ended for some other
+reason, such as the pending timeout writing it off while the charge was in flight, goes out as
+a 409. A 200 carrying a `FAILED` session is a success to every client that checks the status
+code before reading the body. [`tests/api.test.ts`](tests/api.test.ts) pins each row, along
+with the envelope and `no-store`, by calling the route handlers directly — no server, no port.
 
----
+Dev-only knobs, used throughout `scripts/demo.sh`: `GET /api/debug/{events,state}` and
+`POST /api/debug/{advance,price,withdraw,restore,payment,reset}`. "Dev-only" is enforced, not
+just labelled — both handlers answer 404 when `NODE_ENV=production`, because one unauthenticated
+POST to `/reset` would end every fan's checkout at once. Run the demo against `npm run dev`.
 
-## How web and mobile resume the same session
+## How web and mobile share one session
 
-Both surfaces are routes over the same ID and call the same loader (`src/lib/page-data.ts → loadCheckoutPage`). Resume is `GET` + render-by-status. Nothing client-side is authoritative — not local storage, not URL parameters, not which button was pressed.
+Both surfaces are URLs over the same ID and call the same loader
+([`page-data.ts`](src/lib/page-data.ts)). Resuming is a read, and what gets drawn is decided
+by one switch on the session's status with no fallback branch — add a status and the build
+breaks until someone decides what the fan should see. Nothing on the device is authoritative:
+not local storage, not the URL, not which button was pressed.
 
-- **Web** `/checkout/:id` is a Server Component. The session, total, and a correct countdown are in the HTML before JavaScript. Pay is a real `<form>` posting to a Server Action; **it works with JavaScript disabled** (verified in the browser walkthrough). Hydration adds the countdown tick and the button's pending state.
-- **Mobile** `/m/checkout/:id` is the same data in a phone frame with shorter, action-first copy. `/deeplink/:id` stands in for the app's universal-link handler and 302s here. The link carries an ID, never state; the page shows a skeleton, fetches, and renders from status.
-- **Recovery states** are one component (`RecoveryState.tsx`) with one switch: active, price changed, expired (→ try again, which creates a successor), confirming (unknown payment), completed, declined, withdrawn, pending-elsewhere, and not-found (whose copy must not imply data loss).
+`/deeplink/:id` stands in for the link that would open a native app. There is no loading
+spinner because there is nothing to wait for — the page is rendered on the server, so the
+first thing a deep link paints is already the answer. Each surface has its own "not found"
+page so the wording fits, and neither implies the fan lost anything. One caveat I measured
+rather than assumed: Next.js sends a 404 for a missing session with an empty page and fills
+it in with JavaScript, so that single screen is not readable before JS. Keeping the honest
+status code seemed the better trade for a page with no state and no clock on it.
 
-### The clock
+The only client-side coordination is
+[`SessionSync`](src/app/_components/SessionSync.tsx), and it stores nothing and decides
+nothing — every path through it ends in "ask the server again". It covers three ways a page
+goes stale: the browser restoring a frozen copy on Back, an in-app Back landing on a cached
+screen, and a second tab being further ahead than this one.
 
-Every response includes `serverNow`. The countdown's first render is `holdExpiresAt − serverNow` on both server and client, so the HTML and the hydrated tree match. Ticking starts in an effect using a skew computed once from the server's clock. A device that is five minutes fast still shows the right number (verified: 9:57 with `Date.now` shifted +5 min).
+## The four things that go wrong
 
-### Caching
+**Two devices, or one device asking twice.** These look the same and need opposite answers.
+Two devices are two real attempts: the first flips the session to "paying" and the second is
+told so. One device sending the same attempt twice — a double-click, a retried request — is
+one attempt, and the second copy should get the first one's answer rather than a second
+charge. The status check handles the first case and can't handle the second; the idempotency
+key handles the second and can't handle the first. Hence both.
 
-Checkout routes send `Cache-Control: no-store` (via `next.config.ts`), so the browser can't restore a stale Pay button from the back/forward cache. Note: the dev server stamps its own `no-cache, must-revalidate`; the `no-store` header is what ships under `next build && next start`.
+The same care is needed when *reading*, which is the half that's easy to miss. Checking on a
+payment means calling the provider, which means pausing, which means the session may have
+changed by the time the answer comes back. Two tabs refreshing a pending payment at once
+would otherwise each hand the seats back — a listing with four seats ending up with six.
+[`tests/concurrency.test.ts`](tests/concurrency.test.ts) has that scenario, and it fails if
+the guard is removed.
 
----
+**The price moved.** Checked twice when paying: did this screen see the price the session is
+holding, and is that price still the real one? The first alone leaves a gap — the fan loads
+the page, the seller changes the price, the fan presses Pay, and nothing about the session
+has changed so nothing looks wrong.
 
-## Stale inventory, price changes, duplicate completion
+**The seats went away.** Two different things, deliberately kept apart. A hold that *ran out*
+becomes expired and can be started again. A listing the seller *pulled* becomes a failure
+even though the hold was still good, and comes with other listings attached so the fan isn't
+left at a dead end. "Still valid" means more than "not expired yet".
 
-**Duplicate orders — two mechanisms, two jobs.**
-- *Different devices* are deduplicated by the **status compare-and-set**: `complete` re-reads the session synchronously after any `await`, checks it's `ACTIVE` with the expected `version`, and flips it to `PAYMENT_PENDING` — all with no `await` in between. The loser sees `IN_PROGRESS_ELSEWHERE` and renders "finishing on your other device."
-- *The same device retrying* is deduplicated by the **idempotency key**: minted on the server per page render, carried as a hidden input, stored on the session with its outcome, and replayed. A retry of the same form never charges twice.
+**The payment didn't resolve.** The payment's ID is written down before the charge is
+attempted, so if this server died one line later the next read can ask the provider what
+happened to it. A charge that throws is "we don't know" rather than a failure: the seats stay
+held and the fan is told not to retry. A timeout eventually writes the session off, and if a
+late success then arrives for a session already written off, that gets logged as owing
+somebody a refund.
 
-The concurrency test (`tests/concurrency.test.ts`) uses a payment stub that yields to the event loop so the two calls genuinely interleave. I verified it fails when the snapshot bug is reintroduced (reading the session *before* the await) — it caught exactly that bug in my first draft.
+## Timing, money, and what renders before JavaScript
 
-**Price changes** are checked twice at `complete`: did *this device* see the session's price (`priceVersion` in the body), and is the session's snapshot *still live* (`session.priceVersion == pricing.current().version`)? Checking only the first leaves a window where the price moves after the last GET.
+The checkout page is rendered on the server, so the event, seats, total and a correct
+countdown are all in the first HTML. Pay is a real form that posts to the server, so it works
+before React loads and with JavaScript switched off entirely. `Cache-Control: no-store` on
+checkout pages, confirmed under `next build && next start` — the dev server sends a weaker
+header of its own.
 
-**Stale inventory** comes in two kinds. A hold that *expired* becomes `EXPIRED` on the next read and can be re-held. A listing the seller *withdrew* becomes `FAILED / INVENTORY_WITHDRAWN` even if the hold is unexpired — "valid" is not just "not expired."
+**Clocks.** Everything sent over the wire is a plain timestamp, and everything shown on
+screen is a *length of time* between two of them. No time of day is ever displayed, which is
+why nothing here needs to know what timezone anyone is in, and why flying across several
+changes nothing. Timers count using `performance.now()`, which only moves forward at a steady
+rate, rather than re-reading the clock. Changing timezone doesn't move the clock — but a
+phone re-syncing when it lands does, and a timer doing arithmetic on that would visibly
+lurch. It also keeps counting while a tab is in the background, so a throttled timer catches
+up instead of drifting.
 
-**Completion failure**: `paymentIntentId` (= the session ID, used as the provider's idempotency key) is written *before* the charge. If the server dies after charging, the next `GET` asks the provider and reconciles (`payments.nextResult = "lost"` simulates this; scenario 7). If the provider never answers, a pending timeout fails the session and releases the hold.
-
----
-
-## Scenarios (`npm test`)
-
-| # | Scenario | Forces |
-|---|---|---|
-| 1 | Create on web → resume on mobile → complete on mobile | fetch-by-ID; events show `fromSurface` |
-| 2 | Price rises → resume shows it → complete refused → accept → complete | snapshot, two-comparison check |
-| 3 | Clock +11 min → resume is `EXPIRED` → rehold creates successor | implicit expiry, successor link |
-| 4 | Two devices complete concurrently | status CAS, no `await` in the critical section |
-| 5 | Payment declines | `FAILED/DECLINED`, hold released |
-| 6 | Same key retried | replay, one charge |
-| 7 | Charge succeeded, response lost → GET reconciles | intent written before charge |
-| 8 | Timer hits zero mid-payment | PENDING exempt from expiry |
-| 9 | Listing withdrawn while ACTIVE | validity includes "listing still backs it" |
-| 10 | Unknown outcome → stays PENDING → times out | three outcomes, pending timeout |
-| 11 | Hold near event start capped at cutoff | `min()` with policy function |
-| 12 | Deep link for a terminal session | render-from-status, never re-reserve |
-| 13 | Unknown ID | 404 path |
-| 14 | No client time anywhere in the API | server-owned clock |
-| 15 | Client version *ahead* of server | `STALE_VERSION` |
-| 16 | Random operation sequences × 8 seeds | invariants in `invariants.ts` hold after every step |
-
----
-
-## Instrumentation
-
-Events are structured records with the session ID as the correlation ID across web, mobile and backend: `session_created{surface}`, `session_resumed{surface, fromSurface, ageMs}`, `price_change_accepted`, `payment_started`, `completed`, `session_failed{reason}`, `hold_expired`, `hold_expiring_notified`. `GET /api/debug/events` dumps them.
-
-**The metric** is purchases per *fan who started checkout*, resumed vs. single-surface — not per session, since without continuity a fan starts a second session and per-session conversion undercounts the control. Also worth tracking: time-from-resume-to-complete, and the share of resumes that land on `EXPIRED` (a hold-window tuning signal).
-
-**The honest test** needs a holdout: fans who resume are more motivated, so the raw comparison is biased upward. A feature flag that withholds resume links and notifications for a slice of fans is what gives a causal read.
-
----
+**Money** is whole cents everywhere, so the usual floating-point problems never arise —
+multiplying a price by a quantity is integers all the way. The one division happens when
+drawing it on screen, through `Intl.NumberFormat` with the locale fixed so the server and the
+browser can't format the same number differently. That it's exact is asserted rather than
+assumed: a test checks every cent value up to $20,000.
 
 ## Tradeoffs
 
-Each of these is expanded, with sources, in `docs/decisions.md`.
+[`docs/decisions.md`](docs/decisions.md) has one entry per decision — what was chosen, why,
+what it costs, and the engineering write-up it came from. The load-bearing ones: seats and
+sessions live in the same store because they have to be written together; two devices are
+separated by a status check and one device retrying by an idempotency key, because neither
+mechanism can do the other's job; and the payment's ID is written before the charge, so a
+crash after charging is recoverable rather than silent.
 
-- **Same store for hold and inventory** (Shopify's lesson): a hold and the record it guards must commit together.
-- **Status CAS + idempotency key**, not a lock (Airbnb / Stripe): the CAS dedupes across devices, the key across retries.
-- **Intent written before the charge** (Airbnb's pre-RPC / RPC / post-RPC): a crash after charging is recoverable, not silent.
-- **SSR the session, hydrate only what ticks** (Airbnb's Hypernova fallback pattern): the fan gets seats, total and a correct countdown before JS; if SSR failed the page would still client-render.
-- **Single status field + version** rather than separate hold and order records with a workflow engine. Right for one session at a time; at scale the hold goes on its own row.
-- **Two transports over one domain.** Web posts through Server Actions (progressive enhancement for free); mobile would call the HTTP API. Both are ~6-line adapters. The cost is two entry points for `complete`; the benefit is that the demo shows the same session moving across two real transports.
+## Security
 
-## Threat model
+The link is the credential: anyone with the URL can act on the session. IDs are unguessable
+and carry no personal information, but there is no check that the person holding the link is
+the person who started the checkout — a signed, short-lived token would be the first thing to
+add. Holds also cost nothing to create, so someone could take seats off the market in bulk; a
+per-person limit and rate limiting are the fix, and both need a notion of who someone is,
+which is out of scope here.
 
-The link is bearer auth: anyone with the URL can act on the session. IDs are unguessable and carry no PII, but there is no owner check — a signed, short-lived token in the link is the first thing to add. Holds are free inventory denial; a per-client cap on live holds and creation rate limiting need a client identity, which is out of scope here.
+The debug knobs are the one thing here that would be actively dangerous deployed, so they are
+closed structurally rather than by intention: `NODE_ENV=production` makes both handlers 404, and
+a test asserts it. Unauthenticated routes that reset all state or move the server's clock are
+not something to leave reachable and trust nobody to find.
 
 ## With more time
 
-- Signed session tokens; per-client hold cap; rate limiting.
-- Real payment provider with webhook + a reconciliation job (reconcile-on-read already has the shape).
-- A database: `version` → `UPDATE … WHERE id=? AND version=?`; the synchronous critical section → a transaction; the event array → an outbox table. The domain doesn't change.
-- Hold on its own row so the ledger can be queried independently (`SELECT … FOR UPDATE SKIP LOCKED`).
-- SSE so the second surface learns of `COMPLETED` without a refresh.
-- A background sweeper for expired holds (garbage collection) and the "hold expiring soon" push, which is stubbed as `notifier.holdExpiringSoon`.
-- Universal links / app links with web fallback; deferred deep linking; a minimum-app-version check.
+Signed session tokens, a per-person hold limit, rate limiting. A real payment provider, with
+webhooks and a job that reconciles against it. A database — the version counter becomes
+`UPDATE … WHERE id = ? AND version = ?`, the uninterrupted section becomes a transaction, and
+nothing in `src/checkout/` changes. Push updates instead of polling, and a real scheduler for
+the "your hold is running out" notice, which is wired up but has nothing to fire it while the
+clock is a stub.
 
 ## What took the time
 
-The domain and tests were the first hour and the best hour. Two bugs were found by verification, not by thinking: the concurrency test caught a snapshot-after-await in `complete`, and the production build (not dev) exposed that `instanceof CheckoutError` is false across bundle chunks — Server Actions and the domain are bundled separately, so errors are now identified by a brand, not a class. The UI was the least time. If I had to cut, I'd cut the mobile copy variants before anything in `src/checkout/`.
+The state machine and its tests were the first hour and the best hour. Every bug that
+mattered was found by checking rather than by thinking, and two of them taught the same
+lesson from opposite directions.
+
+A concurrency test caught a stale read in the pay path. Fixing it made me confident about
+writes — and that confidence was itself the bug, because the *read* path pauses in exactly
+the same way and had no such guard. Separately, "a hold expires by being noticed" was true of
+the session and false of the seat count, because a plain counter has no way to notice
+anything. Both times I was right about the part I had tested and wrong about the part I
+hadn't.
+
+The UI took the least time. If I had to cut something, the mobile wording variants would go
+first, and nothing in `src/checkout/` would go at all.

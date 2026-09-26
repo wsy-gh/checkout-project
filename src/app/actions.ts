@@ -5,9 +5,21 @@ import { isCheckoutError, type ErrorCode, type Surface } from "@/checkout/types"
 import { checkout } from "@/lib/checkout";
 
 /**
- * Server Actions: the web surface's transport. Each is a thin adapter over the same
- * domain calls the HTTP API uses. Forms that call these are progressively enhanced —
- * they submit even before hydration — which is what makes "Pay works before JS" true.
+ * HOW THE WEB PAGES TALK TO THE BACKEND
+ *
+ * These are Server Actions: functions that live on the server but can be handed directly to
+ * a form's `action`. The browser then submits that form the ordinary way, and Next.js routes
+ * it here. The reason this matters is that ordinary form submission is something browsers
+ * have always done without help — so the forms on these pages work from the moment the HTML
+ * arrives, before React has loaded and even if it never does.
+ *
+ * Each function here is a thin wrapper that reads the form fields and calls exactly the same
+ * function in src/checkout/service.ts that the HTTP API in src/app/api/sessions/ calls. Two
+ * front doors, one set of rules behind them. Nothing is decided in this file.
+ *
+ * They all finish by redirecting rather than returning data, so the page is re-rendered from
+ * the session as it now stands. That keeps what the fan sees tied to the server's state
+ * rather than to whatever the last request happened to hand back.
  */
 
 export type ActionState = { code?: ErrorCode; ok?: boolean };
@@ -18,7 +30,7 @@ export async function createSession(formData: FormData): Promise<void> {
   try {
     id = checkout.create({
       listingId: String(formData.get("listingId")),
-      quantity: Math.max(1, Number(formData.get("quantity") ?? 1)),
+      quantity: Number(formData.get("quantity") ?? 1),
       surface,
     }).id;
   } catch (e) {
@@ -47,6 +59,7 @@ export async function pay(_prev: ActionState, formData: FormData): Promise<Actio
 
 export async function acceptPrice(formData: FormData): Promise<void> {
   const id = String(formData.get("id"));
+  let code: ErrorCode | undefined;
   try {
     await checkout.acceptPrice(id, {
       version: Number(formData.get("version")),
@@ -54,13 +67,25 @@ export async function acceptPrice(formData: FormData): Promise<void> {
       surface: formData.get("surface") === "mobile" ? "mobile" : "web",
     });
   } catch (e) {
-    if (!isCheckoutError(e)) throw e; // any rejection: the page re-renders from the truth
+    if (!isCheckoutError(e)) throw e;
+    // The page still re-renders from the truth, but it has to say what was refused as well.
+    // Redrawing a screen that looks unchanged and saying nothing is indistinguishable from a
+    // button that does not work.
+    code = e.code;
   }
-  redirect(pathFor(formData));
+  redirect(pathFor(formData) + (code ? `?result=${code}` : "?result=ok"));
 }
 
 export async function rehold(formData: FormData): Promise<void> {
-  const next = checkout.rehold(String(formData.get("id")));
+  let next;
+  try {
+    next = checkout.rehold(String(formData.get("id")));
+  } catch (e) {
+    // Someone else took the seats in the meantime. Re-render the expired session, which
+    // already knows how to say so — never an error page.
+    if (isCheckoutError(e)) redirect(pathFor(formData) + `?result=${e.code}`);
+    throw e;
+  }
   redirect(formData.get("surface") === "mobile" ? `/m/checkout/${next.id}` : `/checkout/${next.id}`);
 }
 

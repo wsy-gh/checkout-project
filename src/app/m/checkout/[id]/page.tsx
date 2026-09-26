@@ -1,4 +1,6 @@
 import { RecoveryState } from "@/app/_components/RecoveryState";
+import { SessionMeta } from "@/app/_components/SessionMeta";
+import { SurfaceLinks } from "@/app/_components/SurfaceLinks";
 import { loadCheckoutPage } from "@/lib/page-data";
 
 export const dynamic = "force-dynamic";
@@ -18,12 +20,8 @@ export default async function MobileCheckout({ params, searchParams }: Props) {
       <main className="phone">
         <span className="surface-tag">mobile · deep link</span>
         <RecoveryState {...data} surface="mobile" result={result} />
-        <p className="meta">
-          {data.session.id} · v{data.session.version} · {data.session.status}
-        </p>
-        <p className="links">
-          <a href={`/checkout/${id}`}>← back to web</a>
-        </p>
+        <SessionMeta session={data.session} surface="mobile" />
+        <SurfaceLinks session={data.session} surface="mobile" />
       </main>
     </div>
   );

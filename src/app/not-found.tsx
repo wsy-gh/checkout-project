@@ -1,12 +1,13 @@
 import Link from "next/link";
+import { copy } from "@/lib/copy";
 
-/** A deep link for an unknown session lands here. The copy must not imply data loss. */
+/** Any URL that matches no route. Checkout routes have their own, with the right copy. */
 export default function NotFound() {
   return (
     <main className="web">
-      <h1>We couldn&apos;t find that checkout</h1>
-      <p className="muted">The link may be old or mistyped. Your tickets and payments are unaffected.</p>
-      <Link className="button" href="/">Browse events</Link>
+      <h1>{copy.notFound.page.title}</h1>
+      <p className="muted">{copy.notFound.page.body}</p>
+      <Link className="button" href="/">{copy.notFound.browse}</Link>
     </main>
   );
 }

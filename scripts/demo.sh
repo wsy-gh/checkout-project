@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
 # Walks the checkout-continuity story over the HTTP API and prints the session after each step.
-# Requires the dev server: `npm run dev` (or `npm run build && npm start`) on $BASE.
+# Requires the dev server: `npm run dev` on $BASE.
+#
+# Dev specifically, not a production build. The script drives the story with the debug knobs —
+# moving the clock, changing a price, pulling a listing — and those routes answer 404 in a
+# production build on purpose. See src/app/api/debug/[knob]/route.ts.
 set -euo pipefail
 BASE="${BASE:-http://localhost:3000}"
 J='Content-Type: application/json'
 
+if [ "$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BASE/api/debug/reset" || echo 000)" != "200" ]; then
+  echo "The debug knobs aren't answering on $BASE." >&2
+  echo "Start the dev server first: npm run dev   (a production build disables them by design)" >&2
+  exit 1
+fi
+
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 show() { python3 -c 'import sys,json; d=json.load(sys.stdin); s=d.get("session",{}); print("  status=%s version=%s total=%s priceVersion=%s code=%s priceChange=%s failReason=%s orderId=%s" % (s.get("status"), s.get("version"), s.get("quotedTotal"), s.get("priceVersion"), d.get("code"), d.get("priceChange"), s.get("failReason"), s.get("orderId")))'; }
 field() { python3 -c "import sys,json; print(json.load(sys.stdin)$1)"; }
-
-curl -sS -X POST "$BASE/api/debug/reset" >/dev/null
 
 say "1. Fan starts checkout on WEB for listing L1"
 R=$(curl -sS -X POST "$BASE/api/sessions" -H "$J" -d '{"listingId":"L1","quantity":1,"surface":"web"}')

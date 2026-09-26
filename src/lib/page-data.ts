@@ -4,19 +4,36 @@ import { isCheckoutError, type Surface } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
 
 /**
- * Everything a checkout page needs, loaded once on the server. Both surfaces call this,
- * so "web and mobile resume the same session" is literally the same function.
+ * Load everything a checkout page needs, on the server, before any HTML is sent.
+ *
+ * Both surfaces call this one function — src/app/checkout/[id]/page.tsx for web and
+ * src/app/m/checkout/[id]/page.tsx for the simulated phone. That is not a tidiness choice;
+ * it is the claim of the whole project made literal. "Web and mobile resume the same
+ * session" is true here because there is only one piece of code doing the resuming, and the
+ * only thing the two surfaces disagree about is wording.
  */
 export async function loadCheckoutPage(id: string, surface: Surface) {
   try {
     const session = await checkout.get(id, surface);
     return {
       session,
+      // A withdrawn listing is a dead end unless the page can offer somewhere to go. The
+      // API carries these on the 409; a page renders the FAILED session, so it asks here.
+      ...checkout.alternativesFor(session),
       serverNow: stubs.clock.now(),
       priceChange: checkout.priceChange(session),
       listingName: stubs.inventory.get(session.listingId).eventName,
-      // Minted per render on the server: a retry of the rendered form reuses it, and it
-      // never differs between the server HTML and the hydrated tree.
+      // A fresh key for this rendering of the Pay form, generated here on the server.
+      //
+      // It travels into src/app/_components/PayForm.tsx as a hidden input. Because it is
+      // fixed at render time, every submission of *this* form carries the same value — so a
+      // double-click or a browser retry is recognised as a repeat of one attempt rather than
+      // a new one. Reloading the page mints a new key, which is correct: that genuinely is a
+      // new attempt. See the note above `complete` in src/checkout/service.ts.
+      //
+      // Generating it on the server also avoids a subtle rendering bug: a value invented in
+      // the browser would differ from the one in the server's HTML, and React would complain
+      // that the two do not match.
       idempotencyKey: randomUUID(),
     };
   } catch (e) {
@@ -24,5 +41,3 @@ export async function loadCheckoutPage(id: string, surface: Surface) {
     throw e;
   }
 }
-
-export const noStore = { headers: { "Cache-Control": "no-store" } };

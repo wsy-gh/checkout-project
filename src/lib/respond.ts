@@ -1,7 +1,12 @@
 import { HTTP_STATUS, isCheckoutError, type CheckoutError, type Session } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
 
-/** Every session response, success or failure, has this shape. Clients render `session`. */
+/**
+ * The shape of every reply from the session API, whether it worked or not.
+ *
+ * Both cases carry the full session, so a client never has to ask a follow-up question to
+ * find out where it stands. Failures add a `code` saying which kind of no it was.
+ */
 export type SessionResponse = {
   session: Session;
   serverNow: number;
@@ -17,8 +22,16 @@ export function envelope(session: Session): SessionResponse {
 }
 
 /**
- * Run a domain call and map the outcome to HTTP. A CheckoutError becomes
- * `{ code, session, ...extra }` with the matching status; anything else is a 500.
+ * Run a checkout operation and translate whatever happens into an HTTP response.
+ *
+ * This is the whole of the API layer's logic, which is the point — the route files in
+ * src/app/api/sessions/ do nothing but read their arguments and hand them to
+ * src/checkout/service.ts. Expected rejections (an expired hold, a price change) become a
+ * 4xx carrying the session. Anything else is a real bug and is re-thrown so it surfaces
+ * rather than being flattened into a polite error.
+ *
+ * `no-store` goes on every response because a checkout session is live state, and a cached
+ * copy of it is a lie the moment anything happens.
  */
 export async function respond(fn: () => Promise<Session> | Session): Promise<Response> {
   try {

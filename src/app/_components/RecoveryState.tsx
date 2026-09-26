@@ -1,8 +1,11 @@
 import Link from "next/link";
-import type { PriceChange, Session, Surface } from "@/checkout/types";
+import type { Alternative, PriceChange, Session, Surface } from "@/checkout/types";
 import { acceptPrice, rehold } from "@/app/actions";
+import { copy } from "@/lib/copy";
+import { money } from "@/lib/format";
 import { Countdown } from "./Countdown";
 import { PayForm } from "./PayForm";
+import { SessionSync } from "./SessionSync";
 
 type Props = {
   session: Session;
@@ -11,18 +14,88 @@ type Props = {
   priceChange?: PriceChange;
   idempotencyKey: string;
   listingName: string;
+  alternatives?: Alternative[];
   result?: string;
 };
 
-const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+/**
+ * Decides what the fan actually sees, based on one thing: the session's status.
+ *
+ * Not on which button they pressed, not on what the last request returned — just the status.
+ * That is what makes resuming work. A phone opening a link for the first time and a laptop
+ * refreshing after a failed payment run the same code and reach the same screen, because
+ * they are looking at the same session. There is no "resumed" state to get into.
+ *
+ * Status decides the screen, but it cannot always explain what just happened, which is what
+ * `result` is for and why the banner is drawn out here rather than inside one branch. See
+ * `refusalToShow` below.
+ *
+ * Both surfaces render this. The mobile one passes `surface="mobile"` and gets shorter,
+ * more direct wording — the layout difference lives in the pages themselves.
+ */
+export function RecoveryState(props: Props) {
+  const { session, listingName, priceChange, result } = props;
+  const refusal = refusalToShow(result, session, priceChange);
+
+  return (
+    <>
+      <Header s={session} name={listingName} />
+      {refusal && <ResultBanner code={refusal} />}
+      <StateBody {...props} />
+    </>
+  );
+}
 
 /**
- * One component, one switch on status, no default branch: TypeScript refuses to compile if
- * a status is added and not handled here. Both surfaces render this; the mobile surface
- * passes `surface="mobile"` and gets shorter, action-first copy.
+ * Rejections the panel below already spells out in full.
+ *
+ * A declined card renders the "your payment didn't go through, your seats were released"
+ * screen, which says everything a banner would and says it better. Repeating it on top is
+ * noise, and noise on an error screen is how people learn to stop reading error screens.
  */
-export function RecoveryState({ session: s, surface, serverNow, priceChange, idempotencyKey, listingName, result }: Props) {
-  const mobile = surface === "mobile";
+const PANEL_SAYS_IT: ReadonlySet<string> = new Set([
+  "PAYMENT_DECLINED",
+  "EXPIRED",
+  "ALREADY_COMPLETED",
+  "ALREADY_FAILED",
+  "IN_PROGRESS_ELSEWHERE",
+]);
+
+/**
+ * Which refusal, if any, the fan has to be told about in words.
+ *
+ * The case this exists for: pressing "Try again" on an expired hold after another fan has
+ * taken the seats. The re-hold is refused, the session is still EXPIRED, so the screen
+ * redraws identically — and a button that visibly does nothing is worse than an error. The
+ * same shape catches every rejection that leaves the screen looking unchanged, so the rule
+ * is stated the other way round: say it unless the panel already does.
+ *
+ * Note that an unrecognised code still shows something (see `ResultBanner`). A refusal the
+ * fan never sees is the bug this function exists to prevent, so the default is to speak.
+ */
+function refusalToShow(result: string | undefined, s: Session, priceChange?: PriceChange): string | undefined {
+  if (!result || result === "ok") return undefined;
+  // The price panel shows both numbers and the button to accept the new one.
+  if (result === "PRICE_CHANGED" && priceChange) return undefined;
+  // Worth saying to someone trying to re-hold an expired session; redundant once the
+  // withdrawal is the thing the panel is already about.
+  if (result === "INVENTORY_WITHDRAWN" && s.status === "FAILED") return undefined;
+  if (PANEL_SAYS_IT.has(result)) return undefined;
+  return result;
+}
+
+/**
+ * The panel for the session's current status, and nothing else.
+ *
+ * The switch has no `default` branch, deliberately. TypeScript can tell that `status` has
+ * exactly five possible values, so if someone adds a sixth and forgets this file, the build
+ * fails instead of a fan meeting a blank screen. It is a compile error standing in for a test
+ * nobody would have thought to write.
+ */
+function StateBody({ session: s, surface, serverNow, priceChange, idempotencyKey, alternatives }: Props) {
+  // `surface` picks between the two wordings for every phrase below. Everything the fan
+  // reads comes from src/lib/copy.ts; nothing is written inline here.
+  const words = copy.checkout;
   const hidden = (
     <>
       <input type="hidden" name="id" value={s.id} />
@@ -34,28 +107,24 @@ export function RecoveryState({ session: s, surface, serverNow, priceChange, ide
     case "ACTIVE":
       return (
         <>
-          <Header s={s} name={listingName} />
           <Countdown expiresAt={s.holdExpiresAt} serverNow={serverNow} />
           {priceChange ? (
             <div className="banner warn">
-              <strong>{mobile ? "Price changed" : "The price changed while you were away"}</strong>
+              <strong>{words.priceChanged.title[surface]}</strong>
               <p>
                 <span className="strike">{money(priceChange.from)}</span> → <strong>{money(priceChange.to)}</strong>
-                {!mobile && ". We won't charge the new price until you accept it."}
+                {words.priceChanged.note[surface]}
               </p>
               <form action={acceptPrice} className="actions">
                 {hidden}
                 <input type="hidden" name="version" value={s.version} />
                 <input type="hidden" name="priceVersion" value={priceChange.newPriceVersion} />
-                <button type="submit">Accept {money(priceChange.to)}</button>
-                <Link className="button secondary" href="/">{mobile ? "Cancel" : "No thanks"}</Link>
+                <button type="submit">{words.priceChanged.accept(money(priceChange.to))}</button>
+                <Link className="button secondary" href="/">{words.priceChanged.decline[surface]}</Link>
               </form>
             </div>
           ) : (
-            <>
-              {result && result !== "ok" && <ResultBanner code={result} />}
-              <PayForm session={s} surface={surface} idempotencyKey={idempotencyKey} />
-            </>
+            <PayForm session={s} surface={surface} idempotencyKey={idempotencyKey} />
           )}
         </>
       );
@@ -63,11 +132,10 @@ export function RecoveryState({ session: s, surface, serverNow, priceChange, ide
     case "PAYMENT_PENDING":
       return (
         <>
-          <Header s={s} name={listingName} />
           <div className="banner info" aria-live="polite">
-            <strong>{mobile ? "Confirming your payment…" : "We're confirming your payment"}</strong>
-            <p>{mobile ? "Don't retry. This page will update." : "Don't retry or re-enter your card. Refresh in a moment — this may be finishing on your other device."}</p>
-            <a className="button secondary" href="?">Refresh</a>
+            <strong>{words.confirming.title[surface]}</strong>
+            <p>{words.confirming.body[surface]}</p>
+            <noscript><a className="button secondary" href="?">{words.confirming.refresh[surface]}</a></noscript>
           </div>
         </>
       );
@@ -75,11 +143,10 @@ export function RecoveryState({ session: s, surface, serverNow, priceChange, ide
     case "COMPLETED":
       return (
         <>
-          <Header s={s} name={listingName} />
           <div className="banner good">
-            <strong>{mobile ? "You're in." : "Order confirmed"}</strong>
-            <p>Order <code>{s.orderId}</code> · {money(s.quotedTotal)}</p>
-            <Link className="button" href="/">{mobile ? "View tickets" : "Back to events"}</Link>
+            <strong>{words.completed.title[surface]}</strong>
+            <p>{words.completed.orderLine(s.orderId, money(s.quotedTotal))}</p>
+            <Link className="button" href="/">{words.completed.done[surface]}</Link>
           </div>
         </>
       );
@@ -87,63 +154,80 @@ export function RecoveryState({ session: s, surface, serverNow, priceChange, ide
     case "EXPIRED":
       return (
         <>
-          <Header s={s} name={listingName} />
           <div className="banner warn">
-            <strong>{mobile ? "Your hold ended" : "Your hold ended while you were away"}</strong>
-            <p>{mobile ? "Seats were released. Grab them again?" : "The seats were released so other fans could buy them. You can try again if they're still available."}</p>
+            <strong>{words.expired.title[surface]}</strong>
+            <p>{words.expired.body[surface]}</p>
             <form action={rehold} className="actions">
               {hidden}
-              <button type="submit">Try again</button>
-              <Link className="button secondary" href="/">Back</Link>
+              <button type="submit">{words.expired.retry[surface]}</button>
+              <Link className="button secondary" href="/">{words.expired.back[surface]}</Link>
             </form>
           </div>
         </>
       );
 
-    case "FAILED":
+    case "FAILED": {
+      const failure = words.failed[s.failReason];
+      const withdrawn = s.failReason === "INVENTORY_WITHDRAWN";
       return (
         <>
-          <Header s={s} name={listingName} />
           <div className="banner bad">
-            <strong>
-              {s.failReason === "INVENTORY_WITHDRAWN"
-                ? mobile ? "No longer available" : "These tickets are no longer available"
-                : s.failReason === "DECLINED"
-                  ? mobile ? "Payment declined" : "Your payment didn't go through"
-                  : mobile ? "Couldn't confirm payment" : "We couldn't confirm your payment"}
-            </strong>
-            <p>
-              {s.failReason === "INVENTORY_WITHDRAWN" && (mobile ? "The seller pulled this listing." : "The seller withdrew this listing. Your seats were released and you were not charged.")}
-              {s.failReason === "DECLINED" && (mobile ? "Your seats were released. Try another card." : "Your seats were released. You can try again with another payment method.")}
-              {s.failReason === "PENDING_TIMEOUT" && (mobile ? "If you were charged, we'll refund it." : "The payment provider never confirmed. If you were charged, it will be refunded automatically.")}
-            </p>
+            <strong>{failure.title[surface]}</strong>
+            <p>{failure.body[surface]}</p>
+            {withdrawn && alternatives?.length ? (
+              <ul className="alts">
+                {alternatives.map((a) => (
+                  <li key={a.id}>
+                    <Link href={`/listing/${a.id}`}>{a.eventName}</Link>
+                    <span className="muted"> · {a.section} · {money(a.total)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <div className="actions">
-              <Link className="button" href={`/listing/${s.listingId}`}>{s.failReason === "INVENTORY_WITHDRAWN" ? "See similar" : "Try again"}</Link>
-              <Link className="button secondary" href="/">Back</Link>
+              {/* Never send the fan back to the listing that just vanished. */}
+              {withdrawn ? (
+                <Link className="button" href="/">{failure.action[surface]}</Link>
+              ) : (
+                <Link className="button" href={`/listing/${s.listingId}`}>{failure.action[surface]}</Link>
+              )}
+              <Link className="button secondary" href="/">{words.expired.back[surface]}</Link>
             </div>
           </div>
         </>
       );
+    }
   }
 }
 
+/**
+ * The event name, how many seats, and the total — shown above every status panel.
+ *
+ * Being the one thing every screen renders makes it the natural home for SessionSync, which
+ * keeps the page from going stale. See SessionSync.tsx; it renders nothing visible.
+ */
 function Header({ s, name }: { s: Session; name: string }) {
   return (
     <div className="row">
+      <SessionSync sessionId={s.id} version={s.version} pending={s.status === "PAYMENT_PENDING"} />
       <div>
         <h1>{name}</h1>
-        <p className="muted">{s.quantity} ticket{s.quantity > 1 ? "s" : ""}</p>
+        <p className="muted">{copy.checkout.seats(s.quantity)}</p>
       </div>
       <div className="total">{money(s.quotedTotal)}</div>
     </div>
   );
 }
 
+/**
+ * Shown when the server turned down something the fan just did and the page re-rendered from
+ * the truth. The fallback is deliberately ugly rather than absent: an unworded code is a bug
+ * in src/lib/copy.ts, and a visibly odd sentence is how it gets found. Silence is not.
+ */
 function ResultBanner({ code }: { code: string }) {
-  const copy: Record<string, string> = {
-    STALE_VERSION: "This page was out of date. Here's the current state — please try again.",
-    PRICE_CHANGED: "The price changed. Review it below before paying.",
-    IN_PROGRESS_ELSEWHERE: "Payment is already in progress on another device.",
-  };
-  return <p className="banner warn">{copy[code] ?? `Couldn't complete: ${code}`}</p>;
+  return (
+    <p className="banner warn" role="status">
+      {copy.checkout.rejected[code] ?? `Couldn't complete: ${code}`}
+    </p>
+  );
 }

@@ -115,6 +115,20 @@ describe("expiry", () => {
     expect(late.holdExpiresAt).toBe(stubs.inventory.salesCutoff("L2")); // 2 min window would exceed cutoff
   });
 
+  it("the fan gets a way back: one 'hold expiring soon' notice carrying the deep link", async () => {
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" }); // 10-min hold
+    await checkout.get(s.id, "web");
+    expect(stubs.events.all().filter((e) => e.name === "hold_expiring_notified")).toHaveLength(0);
+
+    stubs.clock.advance(8 * MIN + 1); // inside the 2-minute lead
+    await checkout.get(s.id, "mobile");
+    await checkout.get(s.id, "web"); // repeated reads must not re-notify
+    const notices = stubs.events.all().filter((e) => e.name === "hold_expiring_notified");
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ sessionId: s.id, deepLink: `/deeplink/${s.id}` });
+  });
+
   it("complete after expiry → EXPIRED error, hold released", async () => {
     const { checkout, stubs } = fresh();
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
@@ -147,18 +161,37 @@ describe("payment outcomes", () => {
     expect(stubs.events.all().filter((e) => e.name === "completed")).toHaveLength(1);
   });
 
-  it("7. charge succeeded but the response was lost → GET reconciles to COMPLETED", async () => {
+  it("a replayed decline gets the same answer, not a silent 200", async () => {
     const { checkout, stubs } = fresh();
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
-    stubs.payments.nextResult = "lost";
-    await expect(checkout.complete(s.id, completeBody(s))).rejects.toThrow("network");
+    stubs.payments.nextResult = "declined";
+    expect((await rejects(checkout.complete(s.id, completeBody(s, "k")))).code).toBe("PAYMENT_DECLINED");
+    // Same key, same attempt, same answer — a retry must not look like it succeeded.
+    const replay = await rejects(checkout.complete(s.id, completeBody(s, "k")));
+    expect(replay.code).toBe("PAYMENT_DECLINED");
+    expect(replay.session?.status).toBe("FAILED");
+    expect(stubs.events.all().filter((e) => e.name === "payment_started")).toHaveLength(1);
+  });
 
-    // The server "crashed" mid-flight. The session is PENDING with an intent recorded.
-    const stuck = checkout._all()[0];
+  it("7. charge succeeded but the response was lost → PENDING, then GET reconciles to COMPLETED", async () => {
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    stubs.payments.nextResult = "lost"; // the provider charged; the response never arrived
+
+    // A transport failure is `unknown`, not a decline: the fan is left on "we're confirming",
+    // not on an error page, and the hold is not released on a charge that may have landed.
+    const stuck = await checkout.complete(s.id, completeBody(s));
     expect(stuck.status).toBe("PAYMENT_PENDING");
+    expect(stubs.inventory.get("L1").available).toBe(3);
+
+    // A retry of the same form reconciles on its own read and replays the answer: 200 with
+    // the completed session, not a 409 about a session the fan never knew had moved.
+    const retried = await checkout.complete(s.id, completeBody(s));
+    expect(retried.status).toBe("COMPLETED");
 
     const reconciled = await checkout.get(s.id, "mobile");
     expect(reconciled.status).toBe("COMPLETED");
+    expect(stubs.events.all().filter((e) => e.name === "completed")).toHaveLength(1); // charged once
   });
 
   it("10. unknown outcome → stays PENDING; times out to FAILED/PENDING_TIMEOUT", async () => {
@@ -197,6 +230,61 @@ describe("inventory", () => {
     expect(resumed.status).toBe("FAILED");
     expect(resumed.status === "FAILED" && resumed.failReason).toBe("INVENTORY_WITHDRAWN");
     expect((await rejects(checkout.complete(s.id, completeBody(s)))).code).toBe("INVENTORY_WITHDRAWN");
+  });
+
+  it("a hold nobody re-read still frees its seats for the next fan", async () => {
+    const { checkout, stubs } = fresh();
+    const abandoned = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" }); // L3 has 1 seat
+    stubs.clock.advance(11 * MIN); // the fan closed the tab; nothing ever reads this session
+
+    // Expiry is a predicate, but the inventory counter has to be told. `create` evaluates it
+    // for the listing first, so the next fan is not blocked by a hold that lapsed long ago.
+    const next = await checkout.create({ listingId: "L3", quantity: 1, surface: "mobile" });
+    expect(next.status).toBe("ACTIVE");
+    expect((await checkout.get(abandoned.id)).status).toBe("EXPIRED");
+    expect(stubs.events.all().filter((e) => e.name === "hold_expired")).toHaveLength(1);
+  });
+
+  it("a malformed quantity is rejected, not coerced into the inventory counter", async () => {
+    const { checkout, stubs } = fresh();
+    for (const quantity of [NaN, 0, -1, 1.5]) {
+      expect((await rejects(Promise.resolve().then(() => checkout.create({ listingId: "L1", quantity, surface: "web" })))).code)
+        .toBe("INVALID_REQUEST");
+    }
+    expect(stubs.inventory.get("L1").available).toBe(4); // untouched
+  });
+
+  it("a withdrawn listing hands back comparable listings, never a dead end", async () => {
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    stubs.inventory.withdraw("L1");
+    const failed = await checkout.get(s.id, "mobile");
+
+    const err = await rejects(checkout.complete(s.id, completeBody(s)));
+    expect(err.code).toBe("INVENTORY_WITHDRAWN");
+    expect(err.extra.alternatives).toEqual(checkout.alternativesFor(failed)?.alternatives);
+    expect((err.extra.alternatives as { id: string }[]).map((a) => a.id)).toEqual(["L2", "L3"]);
+  });
+
+  it("checkout refuses to open once sales have closed", async () => {
+    const { checkout, stubs } = fresh();
+    const cutoff = stubs.inventory.salesCutoff("L2");
+
+    // One minute before the cutoff a hold is still possible — and capped at the cutoff.
+    stubs.clock.advance(19 * MIN);
+    const last = await checkout.create({ listingId: "L2", quantity: 1, surface: "web" });
+    expect(last.holdExpiresAt).toBe(cutoff);
+    expect(last.holdExpiresAt).toBeGreaterThan(stubs.clock.now());
+
+    // One minute after it, `min(now + window, cutoff)` would hand back a deadline in the
+    // past: an ACTIVE session the next read immediately expires. Refuse instead.
+    stubs.clock.advance(2 * MIN);
+    expect((await rejects(Promise.resolve().then(() => checkout.create({ listingId: "L2", quantity: 1, surface: "web" })))).code)
+      .toBe("SALES_CLOSED");
+
+    // Both seats are free: the sweep at the top of `create` returned the lapsed one, and the
+    // refusal itself took none — the cutoff is checked before any inventory is held.
+    expect(stubs.inventory.get("L2").available).toBe(2);
   });
 
   it("sold out → SOLD_OUT on create", async () => {
