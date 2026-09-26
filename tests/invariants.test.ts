@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+import { assertInvariants } from "@/checkout/invariants";
+import { CheckoutError, type Session } from "@/checkout/types";
+import { MIN, fresh } from "./helpers";
+
+// Scenario 16. A property-style test: random operation sequences, and after every step
+// every session must satisfy the invariants and the store-level rules. No library; a
+// seeded RNG keeps failures reproducible.
+
+function rng(seed: number) {
+  let x = seed >>> 0;
+  return () => ((x = (x * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+}
+
+const OPS = ["create", "get", "accept", "complete", "advance", "withdraw", "restore", "reprice", "rehold"] as const;
+
+describe("invariants under random operation sequences", () => {
+  for (const seed of [1, 2, 3, 7, 42, 99, 1234, 31337]) {
+    it(`seed ${seed}`, async () => {
+      const rand = rng(seed);
+      const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)];
+      const { checkout, stubs } = fresh();
+      const ids: string[] = [];
+      const listings = ["L1", "L2", "L3"];
+
+      for (let step = 0; step < 120; step++) {
+        const op = pick(OPS);
+        const id = ids.length ? pick(ids) : undefined;
+        try {
+          switch (op) {
+            case "create": {
+              const s = checkout.create({ listingId: pick(listings), quantity: 1, surface: pick(["web", "mobile"] as const) });
+              ids.push(s.id);
+              break;
+            }
+            case "get": if (id) await checkout.get(id, pick(["web", "mobile"] as const)); break;
+            case "accept": {
+              if (!id) break;
+              const s = await checkout.get(id);
+              await checkout.acceptPrice(id, { version: s.version, priceVersion: stubs.pricing.current(s.listingId).version });
+              break;
+            }
+            case "complete": {
+              if (!id) break;
+              const s = await checkout.get(id);
+              stubs.payments.nextResult = pick(["ok", "ok", "declined", "unknown"] as const);
+              await checkout.complete(id, { version: s.version, priceVersion: s.priceVersion, idempotencyKey: `k${step}`, paymentToken: "t" });
+              break;
+            }
+            case "advance": stubs.clock.advance(Math.floor(rand() * 4) * MIN); break;
+            case "withdraw": stubs.inventory.withdraw(pick(listings)); break;
+            case "restore": stubs.inventory.restore(pick(listings)); break;
+            case "reprice": stubs.pricing.setTotal(pick(listings), 1000 + Math.floor(rand() * 9000)); break;
+            case "rehold": if (id) { const s = checkout.rehold(id); ids.push(s.id); } break;
+          }
+        } catch (e) {
+          if (!(e instanceof CheckoutError)) throw e; // domain rejections are expected; anything else is a bug
+        }
+
+        // Per-session invariants
+        for (const s of checkout._all()) assertInvariants(s, stubs.clock.now(), stubs.inventory.salesCutoff(s.listingId));
+
+        // Store-level invariants
+        const all = checkout._all();
+        const orders = all.filter((s): s is Extract<Session, { status: "COMPLETED" }> => s.status === "COMPLETED").map((s) => s.orderId);
+        expect(new Set(orders).size).toBe(orders.length);
+        for (const l of listings) {
+          const live = all.filter((s) => s.listingId === l && (s.status === "ACTIVE" || s.status === "PAYMENT_PENDING" || s.status === "COMPLETED"));
+          const original = { L1: 4, L2: 2, L3: 1 }[l]!;
+          expect(live.reduce((n, s) => n + s.quantity, 0) + stubs.inventory.get(l).available).toBe(original);
+        }
+      }
+    });
+  }
+});

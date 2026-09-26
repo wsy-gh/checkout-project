@@ -1,69 +1,34 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+import Link from "next/link";
+import { stubs } from "@/lib/checkout";
 
+// Home: a tiny "event page" so the demo starts somewhere. Lists the seeded listings.
 export default function Home() {
+  const listings = stubs.inventory.all();
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>
-            To get started, edit the{" "}
-            <code className={styles.code}>page.tsx</code> file.
-          </h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="web">
+      <h1>Checkout Continuity — demo</h1>
+      <p className="muted">
+        Pick a listing to start a checkout on web. Then open the same session on the simulated
+        mobile surface (link on the checkout page) to see the session move across surfaces.
+      </p>
+      {listings.map((l) => (
+        <div key={l.id} className="row" style={{ padding: "12px 0", borderTop: "1px solid var(--line)" }}>
+          <div>
+            <strong>{l.eventName}</strong>
+            <div className="muted">
+              {l.section} · {l.available} left · starts in {Math.round((l.eventStartsAt - stubs.clock.now()) / 60000)} min
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div className="total">${(stubs.pricing.current(l.id).total / 100).toFixed(2)}</div>
+            <Link className="button" href={`/listing/${l.id}`}>Buy</Link>
+          </div>
         </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      ))}
+      <p className="links">
+        <a href="/api/debug/events">event log</a>
+        <a href="/api/debug/state">stub state</a>
+      </p>
+    </main>
   );
 }
