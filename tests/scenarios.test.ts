@@ -142,7 +142,8 @@ describe("payment outcomes", () => {
     const first = await checkout.complete(s.id, completeBody(s, "k-retry"));
     const second = await checkout.complete(s.id, completeBody(s, "k-retry"));
     expect(second.status).toBe("COMPLETED");
-    expect(second.status === "COMPLETED" && first.status === "COMPLETED" && second.orderId).toBe(first.orderId);
+    if (first.status !== "COMPLETED" || second.status !== "COMPLETED") throw new Error("unreachable");
+    expect(second.orderId).toBe(first.orderId);
     expect(stubs.events.all().filter((e) => e.name === "completed")).toHaveLength(1);
   });
 
