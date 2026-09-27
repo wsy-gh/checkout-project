@@ -1,4 +1,4 @@
-import { checkout, resetAll, stubs } from "@/lib/checkout";
+import { checkout, instanceId, resetAll, stubs } from "@/lib/checkout";
 
 type Ctx = { params: Promise<{ knob: string }> };
 
@@ -23,7 +23,7 @@ type Ctx = { params: Promise<{ knob: string }> };
  *
  *
  *   GET  /api/debug/events                     the structured event log
- *   GET  /api/debug/state                      listings + all sessions
+ *   GET  /api/debug/state                      instance id + listings + all sessions
  *   POST /api/debug/advance   {ms}             move the server clock forward
  *   POST /api/debug/price     {listingId,total} change a listing's price (bumps priceVersion)
  *   POST /api/debug/withdraw  {listingId}       seller delists
@@ -40,7 +40,17 @@ export async function GET(_req: Request, { params }: Ctx) {
   const { knob } = await params;
   if (knob === "events") return json(stubs.events.all());
   if (knob === "state")
-    return json({ serverNow: stubs.clock.now(), listings: stubs.inventory.all(), sessions: checkout._all() });
+    return json({
+      // Which process answered. Every session lives in one process's memory, so if two
+      // requests ever report different values here, this deployment is running more than one
+      // instance and sessions are being served from whichever one you happened to reach.
+      // src/lib/checkout.ts refuses to start as a cluster worker; this catches the cases it
+      // cannot see, such as a serverless platform running many isolated instances.
+      instance: { id: instanceId, pid: process.pid },
+      serverNow: stubs.clock.now(),
+      listings: stubs.inventory.all(),
+      sessions: checkout._all(),
+    });
   return json({ error: "unknown knob" }, 404);
 }
 

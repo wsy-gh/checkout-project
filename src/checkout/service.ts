@@ -268,6 +268,7 @@ export function createCheckout(deps: Deps) {
     // a rule that is not really enforced. `Number("abc")` is NaN, and NaN slips through
     // ordinary comparisons like `available < quantity` because every comparison with NaN is
     // false, so an unchecked value here would have silently corrupted the seat count.
+    if (typeof input.listingId !== "string" || input.listingId === "") fail("INVALID_REQUEST");
     if (!Number.isInteger(input.quantity) || input.quantity < 1) fail("INVALID_REQUEST");
     const now = deps.clock.now();
     // Give back any seats whose holds have quietly run out, so we are counting what is
@@ -480,7 +481,23 @@ export function createCheckout(deps: Deps) {
    * both, each doing the job the other cannot.
    */
   async function complete(id: string, input: CompleteInput): Promise<Session> {
-    if (!input.idempotencyKey) fail("INVALID_REQUEST");
+    // The key must be a real string, and a bounded one.
+    //
+    // It used to be enough for it to be truthy, and the route reached it through `String(...)`.
+    // That combination had a sharp edge: `String({})` is `"[object Object]"`, so every caller
+    // who sent a non-string key landed on the *same* key. Two genuinely different attempts
+    // would collide, and the second would be handed the first one's order — the replay
+    // mechanism firing on requests it was never meant to connect. Demonstrated and fixed.
+    //
+    // The length cap is because this string is stored on the session for as long as the
+    // session lives, so an unbounded one is a memory leak with a 200 response.
+    if (typeof input.idempotencyKey !== "string" || !input.idempotencyKey || input.idempotencyKey.length > 200)
+      fail("INVALID_REQUEST");
+
+    // No default. A payment token is the one field where a fallback is actively dangerous:
+    // the stub ignores it, so a missing token silently "worked", and the day this is wired to
+    // a real provider that same path would attempt a charge against a placeholder.
+    if (typeof input.paymentToken !== "string" || !input.paymentToken) fail("INVALID_REQUEST");
     await get(id, input.surface); // bring the session up to date; this may pause
     const s = current(id); // ---- from here to the `put` below: no pausing allowed ----
 

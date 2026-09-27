@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Session, Surface } from "@/checkout/types";
 import { copy } from "@/lib/copy";
+import { checkoutPath } from "@/lib/routes";
 
 /**
  * Links for moving between the two surfaces, and for leaving checkout.
@@ -21,8 +22,8 @@ import { copy } from "@/lib/copy";
 export function SurfaceLinks({ session, surface }: { session: Session; surface: Surface }) {
   const other =
     surface === "web"
-      ? { href: `/m/checkout/${session.id}`, label: "Open this session on mobile" }
-      : { href: `/checkout/${session.id}`, label: "Open this session on web" };
+      ? { href: checkoutPath(session.id, "mobile"), label: "Open this session on mobile" }
+      : { href: checkoutPath(session.id, "web"), label: "Open this session on web" };
 
   return (
     <nav className="links">

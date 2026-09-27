@@ -296,14 +296,163 @@ describe("status codes", () => {
     expect(stubs.events.all().filter((e) => e.name === "reconcile_conflict")).toHaveLength(1);
   });
 
-  it("a body that is not JSON is a 4xx, never a 500", async () => {
-    const res = await createRoute(post("/api/sessions", "}{ not json"));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    expect(res.status).toBeLessThan(500);
-    // An empty body leaves no listing id, and the inventory stub cannot tell "never existed"
-    // from "withdrawn" — `backs()` returns a boolean. A real inventory service would let this
-    // be a 404; conflating them is a limit of the stub, not of the state machine.
-    expect(((await res.json()) as Envelope).code).toBe("INVENTORY_WITHDRAWN");
+  it("every shape of unusable body is a 400, never a 500", async () => {
+    // `null` is the one that used to crash. JSON.parse succeeds on it and it is not an
+    // object, so a try/catch around the parse lets it through and the first property access
+    // throws: "Cannot read properties of null (reading 'listingId')" — a 500 on a two-word
+    // request. The others are valid JSON that is still not a set of fields.
+    for (const body of ["}{ not json", "", "null", "[]", '"just a string"', "42"]) {
+      const res = await createRoute(post("/api/sessions", body));
+      expect(res.status, `body: ${body}`).toBe(400);
+      expect(((await res.json()) as Envelope).code).toBe("INVALID_REQUEST");
+    }
+  });
+
+  it("refuses a body too large to be legitimate", async () => {
+    // Every field this API takes is a short scalar, so there is no size at which a bigger
+    // body becomes useful. A 10MB one was previously read in full and answered 201.
+    const huge = JSON.stringify({ listingId: "L1", quantity: 1, pad: "A".repeat(200_000) });
+    const res = await createRoute(post("/api/sessions", huge));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as Envelope).code).toBe("INVALID_REQUEST");
+    expect(stubs.inventory.get("L1").available).toBe(4); // nothing was held
+  });
+});
+
+/**
+ * Values arriving from outside are recognised, never coerced.
+ *
+ * `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so coercion turns requests that were
+ * never valid into successful ones. Each of these was accepted before src/lib/input.ts.
+ */
+describe("input is recognised, not coerced", () => {
+  it("refuses values that merely look number-ish", async () => {
+    for (const quantity of [true, false, [5], {}, "abc", null, Infinity]) {
+      const res = await createRoute(post("/api/sessions", { listingId: "L1", quantity, surface: "web" }));
+      expect(res.status, `quantity: ${JSON.stringify(quantity)}`).toBe(400);
+      expect(((await res.json()) as Envelope).code).toBe("INVALID_REQUEST");
+    }
+    // A form's <select> can only send a string, so a string that spells a number still works.
+    expect((await read(await createRoute(post("/api/sessions", { listingId: "L1", quantity: "2" })))).session.quantity).toBe(2);
+    expect(stubs.inventory.get("L1").available).toBe(2);
+  });
+
+  it("refuses a listing id that is not a string", async () => {
+    for (const listingId of [["L1"], 123, {}, null, ""]) {
+      const res = await createRoute(post("/api/sessions", { listingId, quantity: 1 }));
+      expect(res.status, `listingId: ${JSON.stringify(listingId)}`).toBe(400);
+    }
+    expect(stubs.inventory.get("L1").available).toBe(4);
+  });
+
+  it("never stores an unrecognised surface", async () => {
+    // This was a cast rather than a check, so `?surface=<script>x</script>` was written into
+    // the session and echoed in the event log. Anything unrecognised is now simply absent.
+    const s = await start("L1", 1, "web");
+    for (const bad of ["EVIL", "<script>x</script>", "web ", "MOBILE", "x".repeat(500)]) {
+      const resumed = await read(await resume(s.id, bad));
+      expect(resumed.session.lastSeenOn).toBe("web"); // unchanged, not overwritten
+    }
+    expect(await read(await resume(s.id, "mobile"))).toBeTruthy();
+    expect((await read(await resume(s.id, "mobile"))).session.lastSeenOn).toBe("mobile");
+
+    const surfaces = new Set(stubs.events.all().map((e) => e.surface).filter(Boolean));
+    expect([...surfaces].every((v) => v === "web" || v === "mobile")).toBe(true);
+  });
+
+  it("refuses an idempotency key that is not a usable string", async () => {
+    const s = await start();
+    for (const idempotencyKey of [{}, [1, 2], 42, true, "", null, "K".repeat(201)]) {
+      const res = await completeRoute(
+        post(`/api/sessions/${s.id}/complete`, { version: s.version, priceVersion: s.priceVersion, idempotencyKey, paymentToken: "t" }),
+        ctx({ id: s.id }),
+      );
+      expect(res.status, `key: ${JSON.stringify(idempotencyKey)}`).toBe(400);
+    }
+    // The bug this closes: String({}) is "[object Object]", so every caller sending a
+    // non-string key shared one key — and the second genuinely different attempt was handed
+    // the first one's order as a replay.
+    expect((await read(await resume(s.id))).session.status).toBe("ACTIVE");
+  });
+
+  it("requires a payment token rather than inventing one", async () => {
+    // The stub ignores the token, so a missing one silently "worked" — and that same path
+    // would attempt a charge against a placeholder the day a real provider is wired in.
+    const s = await start();
+    const res = await completeRoute(
+      post(`/api/sessions/${s.id}/complete`, { version: s.version, priceVersion: s.priceVersion, idempotencyKey: "k" }),
+      ctx({ id: s.id }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as Envelope).code).toBe("INVALID_REQUEST");
+  });
+
+  it("does not forward unknown fields from the body into the domain", async () => {
+    // accept-price used to spread `{ ...body }` into its input — mass assignment, harmless
+    // only while the domain happened to ignore the extras.
+    const s = await start("L1");
+    stubs.pricing.setTotal("L1", 9900);
+    const res = await acceptPriceRoute(
+      post(`/api/sessions/${s.id}/accept-price`, {
+        version: s.version,
+        priceVersion: 2,
+        surface: "INJECTED",
+        quotedTotal: 1,
+        status: "COMPLETED",
+      }),
+      ctx({ id: s.id }),
+    );
+    const after = (await res.json()) as Envelope;
+    expect(after.session?.status).toBe("ACTIVE");
+    expect(after.session?.quotedTotal).toBe(9900); // the real new price, not the injected 1
+    expect(after.session?.lastSeenOn).toBe("web"); // not "INJECTED"
+  });
+});
+
+describe("holds are rate limited", () => {
+  it("lets a normal fan through and stops a loop", async () => {
+    const caller = { "x-forwarded-for": "203.0.113.9" };
+    const create = () =>
+      createRoute(new Request("http://t/api/sessions", {
+        method: "POST",
+        headers: { ...JSON_HEADERS, ...caller },
+        body: JSON.stringify({ listingId: "L1", quantity: 1 }),
+      }));
+
+    // The limit is 20/minute. L1 only has 4 seats, so the first few succeed and the rest are
+    // SOLD_OUT — what matters is that the 21st is refused for a different reason entirely.
+    const codes: number[] = [];
+    for (let i = 0; i < 22; i++) codes.push((await create()).status);
+    expect(codes.slice(0, 20).every((c) => c !== 429)).toBe(true);
+    expect(codes[20]).toBe(429);
+    expect(codes[21]).toBe(429);
+
+    // A different caller is unaffected — the limit is per caller, not global.
+    const other = await createRoute(post("/api/sessions", { listingId: "L2", quantity: 1 }));
+    expect(other.status).not.toBe(429);
+
+    // And the window reopens. The limiter reads the same injected clock as everything else.
+    stubs.clock.advance(61_000);
+    expect((await create()).status).not.toBe(429);
+  });
+
+  it("answers 429 with a code, and holds nothing", async () => {
+    const caller = { "x-forwarded-for": "198.51.100.4" };
+    const create = () =>
+      createRoute(new Request("http://t/api/sessions", {
+        method: "POST",
+        headers: { ...JSON_HEADERS, ...caller },
+        body: JSON.stringify({ listingId: "L3", quantity: 1 }),
+      }));
+    for (let i = 0; i < 20; i++) await create();
+    const res = await create();
+    const body = (await res.json()) as Envelope;
+    expect(res.status).toBe(429);
+    expect(body.code).toBe("RATE_LIMITED");
+    // A refusal that never reached the domain carries no session, which is the one case the
+    // envelope rule cannot satisfy — it is about the caller, not about any one checkout.
+    expect(body.session).toBeUndefined();
+    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 });
 

@@ -6,11 +6,11 @@ import { uuidv7 } from "@/lib/uuid";
 /**
  * Load everything a checkout page needs, on the server, before any HTML is sent.
  *
- * Both surfaces call this one function — src/app/checkout/[id]/page.tsx for web and
- * src/app/m/checkout/[id]/page.tsx for the simulated phone. That is not a tidiness choice;
- * it is the claim of the whole project made literal. "Web and mobile resume the same
- * session" is true here because there is only one piece of code doing the resuming, and the
- * only thing the two surfaces disagree about is wording.
+ * Both surfaces call this one function, from the one page at src/app/checkout/[id]/page.tsx
+ * that `?surface=mobile` re-dresses. That is not a tidiness choice; it is the claim of the
+ * whole project made literal. "Web and mobile resume the same session" is true here because
+ * there is only one piece of code doing the resuming, and the only thing the two surfaces
+ * disagree about is wording.
  */
 export async function loadCheckoutPage(id: string, surface: Surface) {
   try {

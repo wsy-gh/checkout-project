@@ -13,12 +13,12 @@ because the server was the only thing that ever knew.
 ```
 npm install
 npm run dev     # http://localhost:3000
-npm test        # 71 tests, under a second
+npm test        # 80 tests, under a second
 npm run demo    # the whole story over the HTTP API, in curl (needs the dev server running)
 ```
 
 Start a checkout on web, then click **"Open this session on mobile ↗"**, which opens a second
-tab so you can watch one session live in two places. Each checkout page has a dev-only
+tab on the same route with `?surface=mobile` so you can watch one session live in two places. Each checkout page has a dev-only
 **session inspector** that explains the three fields the whole thing runs on, with something
 to try for each. The debug knobs change the price, pull the listing, or move the clock
 forward underneath both tabs.
@@ -99,7 +99,7 @@ POST /api/sessions/:id/complete       { version, priceVersion, idempotencyKey, p
 POST /api/sessions/:id/rehold          start a fresh session after one expired
 ```
 
-`INVALID_REQUEST` 400 · `NOT_FOUND` 404 · `PAYMENT_DECLINED` 402 · and 409 for
+`INVALID_REQUEST` 400 · `NOT_FOUND` 404 · `PAYMENT_DECLINED` 402 · `RATE_LIMITED` 429 · and 409 for
 `STALE_VERSION`, `PRICE_CHANGED`, `EXPIRED`, `IN_PROGRESS_ELSEWHERE`, `ALREADY_COMPLETED`,
 `ALREADY_FAILED`, `INVENTORY_WITHDRAWN` (which brings other listings with it), `SOLD_OUT`,
 `SALES_CLOSED`.
@@ -116,13 +116,37 @@ Dev-only knobs, used throughout `scripts/demo.sh`: `GET /api/debug/{events,state
 just labelled — both handlers answer 404 when `NODE_ENV=production`, because one unauthenticated
 POST to `/reset` would end every fan's checkout at once. Run the demo against `npm run dev`.
 
+## Input handling
+
+Every value from outside is *recognised*, never coerced — `src/lib/input.ts` has the three
+functions that do it, and they return `undefined` rather than inventing a plausible answer.
+That distinction is the whole point: `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so
+coercion turns a request that was never valid into a successful one. `asSurface` in particular
+is called at every boundary the word "surface" can enter through — a query string on the page,
+a query string on the API, two JSON bodies, and every form — so there is one definition of what
+counts as a surface rather than five casts.
+
+Shape checks that apply to both front doors live in the domain, not the routes, because a rule
+enforced in one doorway is not really enforced. Bodies are read inside `respond`, so a
+malformed one is a 400 with a code rather than a 500; they are capped at 16 KB; and anything
+that parses to something other than a JSON object (`null`, `[]`, a bare string) is treated as
+no fields at all.
+
+`POST /api/sessions` is rate limited to 20 holds per minute per caller — the only endpoint
+that takes seats off the market, and so the only one worth abusing. That bounds the *speed* of
+bulk inventory denial; bounding the *total* needs a durable identity, which is the auth this
+prototype doesn't have.
+
 ## How web and mobile share one session
 
-Both surfaces are URLs over the same ID and call the same loader
-([`page-data.ts`](src/lib/page-data.ts)). Resuming is a read, and what gets drawn is decided
-by one switch on the session's status with no fallback branch — add a status and the build
-breaks until someone decides what the fan should see. Nothing on the device is authoritative:
-not local storage, not the URL, not which button was pressed.
+Both surfaces are the same route over the same ID and call the same loader
+([`page-data.ts`](src/lib/page-data.ts)). `/checkout/:id` is the page and `?surface=mobile`
+re-dresses it in a phone frame; there is no second route. Resuming is a read, and what gets
+drawn is decided by one switch on the session's status with no fallback branch — add a status
+and the build breaks until someone decides what the fan should see. Nothing on the device is
+authoritative: not local storage, not which button was pressed, and not the URL. `surface`
+lives in the URL and is the exception that proves it — it picks a stylesheet and a wording
+variant, never a seat, a price or a deadline, and an unrecognised value falls back to web.
 
 `/deeplink/:id` stands in for the link that would open a native app. There is no loading
 spinner because there is nothing to wait for — the page is rendered on the server, so the
@@ -209,17 +233,22 @@ The link is the credential: anyone with the URL can act on the session, and ther
 that the person holding it is the person who started the checkout. A signed, short-lived token
 would be the first thing to add.
 
-Session IDs make that worse, deliberately and visibly: they are `cs_0001`, `cs_0002`, so the
-whole store can be walked by counting. That is a demo affordance, not an oversight — readable
-IDs are most of what makes `scripts/demo.sh` and the session inspector legible, and this is a
-prototype with no real fan data in it. It is also the single change I would make first, and it
-is one line in `stubs.ts`: `ids.next` returns the counter, and returning a UUIDv7 instead
-(`src/lib/uuid.ts`, already used for idempotency keys) closes enumeration without touching
-anything else. Nothing carries personal information either way.
+Session IDs are `cs_` plus a UUIDv7, so the link is at least unguessable: they were `cs_0001`,
+`cs_0002`, which meant the whole store could be walked by counting. Nothing carries personal
+information.
 
-Holds also cost nothing to create, so someone could take seats off the market in bulk; a
-per-person limit and rate limiting are the fix, and both need a notion of who someone is,
-which is out of scope here.
+Holds cost nothing to create, so `POST /api/sessions` is rate limited per caller. That is only
+half the fix — it bounds how *fast* one caller can deny inventory, not how *much* they can hold
+at once, and the per-person cap that would bound the total needs a durable identity rather than
+an IP address. In production the limiter also belongs at the edge, where it sees every request
+instead of the share that reached one server.
+
+The app keeps every session in one process's memory, and the concurrency argument in
+`service.ts` depends on that. Two processes would not race — they would each have their own
+store and simply not see each other's sessions — so `src/lib/checkout.ts` refuses to start as a
+cluster worker rather than serving half the sessions to half the users, and
+`GET /api/debug/state` reports which process answered so the cases that check cannot see
+(serverless, say) are at least visible.
 
 The debug knobs are the one thing here that would be actively dangerous deployed, so they are
 closed structurally rather than by intention: `NODE_ENV=production` makes both handlers 404, and

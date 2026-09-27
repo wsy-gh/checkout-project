@@ -111,6 +111,7 @@ export const copy = {
       SOLD_OUT: "Another fan took those seats while you were away. Other listings for this event may still have some.",
       SALES_CLOSED: "Sales have closed for this event, so the hold can't be renewed.",
       INVENTORY_WITHDRAWN: "The seller withdrew this listing, so those seats can't be held again.",
+      RATE_LIMITED: "That's a lot of checkouts in a short time. Give it a minute and try again.",
     } as Record<string, string | undefined>,
   },
 
@@ -140,6 +141,7 @@ export const copy = {
       INVENTORY_WITHDRAWN: "This listing was withdrawn.",
       SALES_CLOSED: "Sales have closed for this event.",
       INVALID_REQUEST: "That quantity isn't available.",
+      RATE_LIMITED: "You've started a lot of checkouts just now. Give it a minute and try again.",
     } as Record<string, string | undefined>,
   },
 

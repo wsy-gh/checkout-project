@@ -1,6 +1,6 @@
 # Scenarios and instrumentation
 
-Rows 1-27 run against the domain directly, which is where the rules live. Rows 28-38 run
+Rows 1-27 run against the domain directly, which is where the rules live. Rows 28-47 run
 against the route handlers, called as plain functions the way Next.js calls them — that is the
 only layer where a status code or a response envelope exists to get wrong. Rows 17-24 are
 regression tests: each fails if you remove the fix it covers, which I verified by removing them
@@ -46,6 +46,15 @@ one at a time.
 | 36 | A charge landing after the pending timeout failed the session | `409 ALREADY_FAILED`, not a `200` carrying a `FAILED` session |
 | 37 | A body that is not JSON | a `4xx`, never a `500` |
 | 38 | Debug knobs under `NODE_ENV=production` | `404` from both handlers; the state is untouched |
+| 39 | Every unusable body shape — `null`, `[]`, `"str"`, `42`, garbage | `400`, never a `500`; `null` used to crash on property access |
+| 40 | A body over 16 KB | `400` before it is parsed, and nothing held |
+| 41 | `quantity` as `true`, `[5]`, `{}`, `Infinity` | `400` — recognised, not coerced; `"2"` still works, since forms send strings |
+| 42 | `listingId` as `["L1"]`, `123`, `{}` | `400` — `String(["L1"])` is `"L1"`, which is exactly the problem |
+| 43 | `surface` as anything unrecognised, anywhere | treated as absent; never written to the session or the event log |
+| 44 | `idempotencyKey` as `{}`, `[1,2]`, 201 chars | `400` — `String({})` collided every such caller onto one key |
+| 45 | `paymentToken` omitted | `400`; no default, because the default would charge a placeholder |
+| 46 | Unknown fields in an `accept-price` body | ignored; fields are named, not spread |
+| 47 | 21 holds in a minute from one caller | `429 RATE_LIMITED`; other callers unaffected; window reopens |
 
 ---
 

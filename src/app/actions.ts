@@ -1,8 +1,10 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { isCheckoutError, type ErrorCode, type Surface } from "@/checkout/types";
+import { isCheckoutError, type ErrorCode } from "@/checkout/types";
 import { checkout } from "@/lib/checkout";
+import { asSurface } from "@/lib/input";
+import { checkoutPath } from "@/lib/routes";
 
 /**
  * HOW THE WEB PAGES TALK TO THE BACKEND
@@ -25,7 +27,7 @@ import { checkout } from "@/lib/checkout";
 export type ActionState = { code?: ErrorCode; ok?: boolean };
 
 export async function createSession(formData: FormData): Promise<void> {
-  const surface = (formData.get("surface") === "mobile" ? "mobile" : "web") as Surface;
+  const surface = asSurface(formData.get("surface")) ?? "web";
   let id: string;
   try {
     id = checkout.create({
@@ -37,7 +39,7 @@ export async function createSession(formData: FormData): Promise<void> {
     if (isCheckoutError(e)) redirect(`/listing/${formData.get("listingId")}?error=${e.code}`);
     throw e;
   }
-  redirect(surface === "mobile" ? `/m/checkout/${id}` : `/checkout/${id}`);
+  redirect(checkoutPath(id, surface));
 }
 
 export async function pay(_prev: ActionState, formData: FormData): Promise<ActionState> {
@@ -48,7 +50,7 @@ export async function pay(_prev: ActionState, formData: FormData): Promise<Actio
       priceVersion: Number(formData.get("priceVersion")),
       idempotencyKey: String(formData.get("idempotencyKey")),
       paymentToken: "tok_test", // provider-hosted fields would supply this; the session never stores it
-      surface: formData.get("surface") === "mobile" ? "mobile" : "web",
+      surface: surfaceOf(formData),
     });
   } catch (e) {
     if (isCheckoutError(e)) return refreshWith({ code: e.code }, formData);
@@ -64,7 +66,7 @@ export async function acceptPrice(formData: FormData): Promise<void> {
     await checkout.acceptPrice(id, {
       version: Number(formData.get("version")),
       priceVersion: Number(formData.get("priceVersion")),
-      surface: formData.get("surface") === "mobile" ? "mobile" : "web",
+      surface: surfaceOf(formData),
     });
   } catch (e) {
     if (!isCheckoutError(e)) throw e;
@@ -73,7 +75,7 @@ export async function acceptPrice(formData: FormData): Promise<void> {
     // button that does not work.
     code = e.code;
   }
-  redirect(pathFor(formData) + (code ? `?result=${code}` : "?result=ok"));
+  redirect(pathFor(formData, { result: code ?? "ok" }));
 }
 
 export async function rehold(formData: FormData): Promise<void> {
@@ -83,10 +85,10 @@ export async function rehold(formData: FormData): Promise<void> {
   } catch (e) {
     // Someone else took the seats in the meantime. Re-render the expired session, which
     // already knows how to say so — never an error page.
-    if (isCheckoutError(e)) redirect(pathFor(formData) + `?result=${e.code}`);
+    if (isCheckoutError(e)) redirect(pathFor(formData, { result: e.code }));
     throw e;
   }
-  redirect(formData.get("surface") === "mobile" ? `/m/checkout/${next.id}` : `/checkout/${next.id}`);
+  redirect(checkoutPath(next.id, surfaceOf(formData)));
 }
 
 /**
@@ -95,10 +97,15 @@ export async function rehold(formData: FormData): Promise<void> {
  * the form was submitted with or without JavaScript.
  */
 function refreshWith(state: ActionState, formData: FormData): never {
-  redirect(pathFor(formData) + (state.code ? `?result=${state.code}` : "?result=ok"));
+  redirect(pathFor(formData, { result: state.code ?? "ok" }));
 }
 
-function pathFor(formData: FormData) {
-  const id = String(formData.get("id"));
-  return formData.get("surface") === "mobile" ? `/m/checkout/${id}` : `/checkout/${id}`;
+/** The surface a form was submitted from. Checked, not cast — see src/lib/input.ts. */
+function surfaceOf(formData: FormData) {
+  return asSurface(formData.get("surface")) ?? "web";
+}
+
+/** Back to the page this form was on, carrying whatever the server decided. */
+function pathFor(formData: FormData, extra: Record<string, string> = {}) {
+  return checkoutPath(String(formData.get("id")), surfaceOf(formData), extra);
 }

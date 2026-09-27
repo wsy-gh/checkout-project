@@ -1,4 +1,5 @@
 import type { Alternative, Deps, PaymentOutcome } from "./types";
+import { uuidv7 } from "@/lib/uuid";
 
 /**
  * STAND-INS FOR EVERYTHING OUTSIDE THIS APP
@@ -44,13 +45,12 @@ export function makeStubs(opts: { now?: number } = {}) {
   // without replacing the stub objects around it. That matters because those stubs are held
   // on globalThis (see src/lib/checkout.ts) and other modules keep references to them —
   // swapping them out would leave half the app talking to an abandoned copy.
-  const state = { t: 0, frozen: false, offset: 0, n: 0, listings: new Map<string, Listing>(), intents: new Map<string, PaymentOutcome>() };
+  const state = { t: 0, frozen: false, offset: 0, listings: new Map<string, Listing>(), intents: new Map<string, PaymentOutcome>() };
 
   function seed() {
     state.t = opts.now ?? Date.now();
     state.frozen = opts.now !== undefined;
     state.offset = 0;
-    state.n = 0;
     state.intents = new Map();
     const base = clock.now();
     state.listings = new Map(
@@ -73,7 +73,19 @@ export function makeStubs(opts: { now?: number } = {}) {
   };
 
   // ---- ids ----
-  const ids = { next: (prefix: string) => `${prefix}_${(++state.n).toString(36).padStart(4, "0")}` };
+  //
+  // A prefix so a value is recognisable at a glance, then a UUIDv7.
+  //
+  // These were `cs_0001`, `cs_0002` — which made the demo wonderfully readable and the whole
+  // store walkable by counting. Since the link is the only credential a session has (there is
+  // no auth), a guessable ID is not a small problem: it is the difference between "you need
+  // the link" and "you need to be able to count".
+  //
+  // v7 rather than v4 because it begins with a millisecond timestamp, so IDs sort by when they
+  // were minted. Against a real database that keeps inserts at one end of the index instead of
+  // scattered through it; here it just means `_all()` comes back in a sensible order. The 74
+  // random bits are what make it unguessable. See src/lib/uuid.ts.
+  const ids = { next: (prefix: string) => `${prefix}_${uuidv7(clock.now())}` };
 
   seed();
 

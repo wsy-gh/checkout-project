@@ -107,7 +107,8 @@ export type ErrorCode =
   | "INVENTORY_WITHDRAWN"
   | "SOLD_OUT"
   | "SALES_CLOSED"
-  | "PAYMENT_DECLINED";
+  | "PAYMENT_DECLINED"
+  | "RATE_LIMITED";
 
 export const HTTP_STATUS: Record<ErrorCode, number> = {
   INVALID_REQUEST: 400,
@@ -122,6 +123,10 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   SOLD_OUT: 409,
   SALES_CLOSED: 409,
   PAYMENT_DECLINED: 402,
+  // 429 is the only code here that is not about this fan's session at all — it is about how
+  // many they have started. It therefore travels without one, which is why `session` is
+  // optional on CheckoutError.
+  RATE_LIMITED: 429,
 };
 
 export type PriceChange = { from: number; to: number; newPriceVersion: number };

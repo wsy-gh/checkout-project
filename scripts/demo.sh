@@ -23,7 +23,7 @@ say "1. Fan starts checkout on WEB for listing L1"
 R=$(curl -sS -X POST "$BASE/api/sessions" -H "$J" -d '{"listingId":"L1","quantity":1,"surface":"web"}')
 echo "$R" | show
 ID=$(echo "$R" | field '["session"]["id"]')
-echo "  session id: $ID   web: $BASE/checkout/$ID   mobile: $BASE/m/checkout/$ID"
+echo "  session id: $ID   web: $BASE/checkout/$ID   mobile: $BASE/checkout/$ID?surface=mobile"
 
 say "2. Price rises while the fan is away"
 curl -sS -X POST "$BASE/api/debug/price" -H "$J" -d '{"listingId":"L1","total":9900}' >/dev/null
