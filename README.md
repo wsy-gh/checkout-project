@@ -5,10 +5,13 @@ without being charged twice, without seats being held forever, and without a pri
 slipping past them.
 
 The whole design follows from one decision: **the server owns everything, and a device holds
-nothing but an ID.** Seats, price, and the deadline all live in one record on the server. A
-browser is given that record's ID and nothing else. "Resuming on your phone" is then not a
-feature that needs building — the phone asks about the same ID and gets the same answer,
-because the server was the only thing that ever knew.
+no session state.** Seats, price, and the deadline all live in one record on the server. A
+browser is given that record's ID (in the URL) and, in a cookie, an anonymous id for itself —
+and nothing else; neither is authoritative over any seat, price, or deadline. "Resuming on your
+phone" is then not a feature that needs building — the phone asks about the same ID and gets the
+same answer, because the server was the only thing that ever knew. (The cookie is a separate
+concern: it lets the server recognise one browser across its own repeated attempts, so a single
+browser can't drain a listing by starting the same checkout over and over. See *Security*.)
 
 ```
 npm install
@@ -86,10 +89,12 @@ Five rules do most of the work:
 
 ## The API
 
-Every response carries the full session, whether the request succeeded or not. That means a
-client never has to ask a second question to find out where it stands — it can always just
-redraw from what it was handed. Failures add a short code that picks the wording and the
-button, nothing more.
+Every response about a session carries that full session, whether the request succeeded or
+not, so a client never has to ask a second question to find out where it stands — it just
+redraws from what it was handed. Failures add a short code that picks the wording and the
+button. The exceptions are the errors that are not about a particular session — an unknown ID,
+or a request too malformed to name one (`NOT_FOUND`, `INVALID_REQUEST`, and the create-time
+`SOLD_OUT` / `SALES_CLOSED` / `INVENTORY_WITHDRAWN`) — which carry only the code.
 
 ```
 POST /api/sessions                    { listingId, quantity, surface }              → 201
@@ -123,8 +128,8 @@ functions that do it, and they return `undefined` rather than inventing a plausi
 That distinction is the whole point: `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so
 coercion turns a request that was never valid into a successful one. `asSurface` in particular
 is called at every boundary the word "surface" can enter through — a query string on the page,
-a query string on the API, two JSON bodies, and every form — so there is one definition of what
-counts as a surface rather than five casts.
+a query string on the API, three JSON bodies (create, complete, accept-price), and every form —
+so there is one definition of what counts as a surface rather than one cast per entry point.
 
 Shape checks that apply to both front doors live in the domain, not the routes, because a rule
 enforced in one doorway is not really enforced. Bodies are read inside `respond`, so a
@@ -139,14 +144,16 @@ Both surfaces are the same route over the same ID and call the same loader
 re-dresses it in a phone frame; there is no second route. Resuming is a read, and what gets
 drawn is decided by one switch on the session's status with no fallback branch — add a status
 and the build breaks until someone decides what the fan should see. Nothing on the device is
-authoritative: not local storage, not which button was pressed, and not the URL. `surface`
-lives in the URL and is the exception that proves it — it picks a stylesheet and a wording
+authoritative: not local storage, not which button was pressed, not the URL, and not the
+`cid` cookie (which names the browser for hold dedup but decides nothing about a session).
+`surface` lives in the URL and is the exception that proves it — it picks a stylesheet and a wording
 variant, never a seat, a price or a deadline, and an unrecognised value falls back to web.
 
 `/deeplink/:id` stands in for the link that would open a native app. There is no loading
 spinner because there is nothing to wait for — the page is rendered on the server, so the
-first thing a deep link paints is already the answer. Each surface has its own "not found"
-page so the wording fits, and neither implies the fan lost anything. One caveat I measured
+first thing a deep link paints is already the answer. The checkout route has one "not found"
+page shared by both surfaces — Next.js renders it without the `surface`, so it cannot differ —
+worded so it never implies the fan lost anything. One caveat I measured
 rather than assumed: Next.js sends a 404 for a missing session with an empty page and fills
 it in with JavaScript, so that single screen is not readable before JS. Keeping the honest
 status code seemed the better trade for a page with no state and no clock on it.
@@ -219,7 +226,8 @@ up instead of drifting.
 multiplying a price by a quantity is integers all the way. The one division happens when
 drawing it on screen, through `Intl.NumberFormat` with the locale fixed so the server and the
 browser can't format the same number differently. That it's exact is asserted rather than
-assumed: a test checks every cent value up to $20,000.
+assumed: a test checks the cent values where that division could round the wrong way — every
+cents place at several magnitudes, plus values near a binary rounding step — up to $20,000.
 
 ## Tradeoffs
 
@@ -240,10 +248,20 @@ Session IDs are `cs_` plus a UUIDv7, so the link is at least unguessable: they w
 `cs_0002`, which meant the whole store could be walked by counting. Nothing carries personal
 information.
 
-Holds cost nothing to create, so someone could take seats off the market in bulk. Rate limiting
-slows that down and a per-person cap on live holds bounds it, but both want a durable notion of
-who someone is — the auth this prototype doesn't have — so they are listed under *With more time*
-rather than half-built here.
+Holds cost nothing to create, so someone could take seats off the market in bulk. Two flavours of
+this, kept apart. The accidental kind — one browser reserving a listing's whole inventory just by
+repeating Buy → Start → Back, each Back leaving a fresh hold behind — is closed: the server hands
+each browser an anonymous id in an `httpOnly` `cid` cookie (`src/lib/client-id.ts`), and `create`
+returns that browser's existing live hold for a listing instead of reserving new seats, so
+repeating the flow resumes the one checkout rather than stacking holds. It is deliberately a cookie
+rather than `localStorage` (a cookie is sent with every request and set server-side) or a device
+fingerprint (unreliable and privacy-hostile). This is *not* a security boundary, though: a client
+that clears the cookie, or talks to the API without one, gets a fresh identity. The deliberate
+kind — a script determined to hoard — is bounded only by rate limiting and a per-person cap on live
+holds, and both want a durable identity behind real auth, so they stay under *With more time*.
+Note the cookie is per-browser, so it never interferes with cross-device continuity: a hold created
+on the laptop still opens on the phone by its link, cookie or no cookie, and leaving checkout never
+releases the hold.
 
 The app keeps every session in one process's memory, and the concurrency argument in
 `service.ts` depends on that. Two processes would not race — they would each have their own
@@ -260,7 +278,9 @@ not something to leave reachable and trust nobody to find.
 ## With more time
 
 Signed session tokens, and a signed-in identity to hang two things off: a per-person cap on
-concurrent holds, and **rate limiting** on hold creation. An earlier version rate-limited by IP
+concurrent holds (the anonymous cookie identity handles the accidental repeat-the-flow case today,
+but a durable cap that survives a cookie wipe needs a real account), and **rate limiting** on hold
+creation. An earlier version rate-limited by IP
 address, but an IP is a guess — shared behind one office router, changed with a tap — so it was
 removed rather than shipped as protection that doesn't hold; done properly it belongs at the
 edge, keyed to a real identity.

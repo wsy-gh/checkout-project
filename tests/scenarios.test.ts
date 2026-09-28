@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { MIN, T0, completeBody, fresh, rejects } from "./helpers";
 
-// Each test is one row from the scenario table in the README. They run against the
-// domain directly; the HTTP and UI layers are thin adapters over these same calls.
+// Each test here is one row from the scenario table in the README. They run against the domain
+// directly rather than through HTTP or the UI, because those layers are thin adapters over exactly
+// these same calls, so testing the domain is where the rules themselves are actually pinned down.
 
 describe("cross-surface resume", () => {
   it("1. create on web → resume on mobile → complete on mobile", async () => {
@@ -178,14 +179,15 @@ describe("payment outcomes", () => {
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
     stubs.payments.nextResult = "lost"; // the provider charged; the response never arrived
 
-    // A transport failure is `unknown`, not a decline: the fan is left on "we're confirming",
-    // not on an error page, and the hold is not released on a charge that may have landed.
+    // Since a transport failure tells us nothing about whether the charge landed, it is treated as
+    // `unknown` rather than a decline: the fan is left on "we're confirming" instead of an error page,
+    // and the hold is not released on a charge that may well have gone through.
     const stuck = await checkout.complete(s.id, completeBody(s));
     expect(stuck.status).toBe("PAYMENT_PENDING");
     expect(stubs.inventory.get("L1").available).toBe(3);
 
-    // A retry of the same form reconciles on its own read and replays the answer: 200 with
-    // the completed session, not a 409 about a session the fan never knew had moved.
+    // Since a retry of the same form reconciles on its own read before replaying the answer, it gets
+    // a 200 with the completed session rather than a 409 about a session the fan never knew had moved.
     const retried = await checkout.complete(s.id, completeBody(s));
     expect(retried.status).toBe("COMPLETED");
 
@@ -296,9 +298,10 @@ describe("inventory", () => {
 
 describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
   it("a pending payment nobody re-reads still frees its seats for the next fan", async () => {
-    // P1-1. Reserve the only seat on L3, get no answer from the provider, walk away. Before
-    // the fix the seat stayed held forever, because only ACTIVE sessions were swept and the
-    // pending timeout only fired when someone read that particular session.
+    // P1-1. This reserves the only seat on L3, gets no answer from the provider, and walks away.
+    // Since the fix, the seat comes back for the next fan; before it, the seat stayed held forever,
+    // because only ACTIVE sessions were swept and the pending timeout only fired when someone read
+    // that particular session — which nobody does after closing the tab.
     const { checkout, stubs } = fresh();
     const abandoned = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
     stubs.payments.nextResult = "unknown";
@@ -316,9 +319,10 @@ describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
   });
 
   it("a charge that lands after the timeout already failed the session is still refunded", async () => {
-    // P1-2. unknown → timeout fails the session and releases the seat → THEN the provider
-    // confirms the charge went through. Before the fix, no read ever checked the provider
-    // again, so the fan was charged with nobody the wiser: zero reconcile_conflict events.
+    // P1-2. The sequence is: unknown outcome, then the timeout fails the session and releases the
+    // seat, then the provider confirms the charge actually went through. Since the fix, a later read
+    // re-checks and refunds; before it, no read ever consulted the provider again, so the fan was
+    // charged with nobody the wiser — zero reconcile_conflict events.
     const { checkout, stubs } = fresh();
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
     stubs.payments.nextResult = "unknown";
@@ -344,8 +348,9 @@ describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
   });
 
   it("a late-confirmed charge discovered during a sweep is refunded too", async () => {
-    // The same reconciliation via the independent trigger (a sweep) rather than a direct read,
-    // which is what makes it work even if the abandoning fan never comes back.
+    // The same reconciliation, but reached through the independent trigger (a sweep) rather than a
+    // direct read of the session — which is what makes it work even if the abandoning fan never
+    // comes back.
     const { checkout, stubs } = fresh();
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
     stubs.payments.nextResult = "unknown";
@@ -360,7 +365,8 @@ describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
   });
 
   it("a pending charge that turns out declined releases the seat on the next sweep", async () => {
-    // The seat-freeing path when the abandoned charge was in fact declined: no refund owed.
+    // The seat-freeing path for when the abandoned charge turns out to have been declined, in which
+    // case no money moved and no refund is owed.
     const { checkout, stubs } = fresh();
     const s = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
     stubs.payments.nextResult = "unknown";
@@ -376,10 +382,77 @@ describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
   });
 });
 
+describe("per-client hold dedup (one browser can't drain a listing via repeated sessions)", () => {
+  it("repeating create for the same browser and listing resumes the one hold instead of taking more seats", async () => {
+    // The reported bug: Buy → Start → Back → repeat lets one browser reserve L1's whole inventory
+    // through separate sessions. With a client identity, every repeat returns the same session.
+    const { checkout, stubs } = fresh();
+    const cid = "browser-A";
+    const first = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    expect(stubs.inventory.get("L1").available).toBe(3); // one seat held, three left
+
+    for (let i = 0; i < 5; i++) {
+      const again = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+      expect(again.id).toBe(first.id); // same session, every time
+    }
+    expect(stubs.inventory.get("L1").available).toBe(3); // still three — no extra seats taken
+    expect(checkout._all().filter((s) => s.status === "ACTIVE")).toHaveLength(1);
+    expect(stubs.events.all().filter((e) => e.name === "hold_resumed_same_client")).toHaveLength(5);
+  });
+
+  it("a different browser still gets its own hold", async () => {
+    const { checkout, stubs } = fresh();
+    const a = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: "browser-A" });
+    const b = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: "browser-B" });
+    expect(b.id).not.toBe(a.id);
+    expect(stubs.inventory.get("L1").available).toBe(2); // two distinct holds
+  });
+
+  it("the same browser may hold different listings at once", async () => {
+    const { checkout } = fresh();
+    const cid = "browser-A";
+    const l1 = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    const l2 = await checkout.create({ listingId: "L2", quantity: 1, surface: "web", clientId: cid });
+    expect(l2.id).not.toBe(l1.id); // dedup is per listing, so a real multi-event purchase still works
+  });
+
+  it("once the browser's hold has expired, a repeat starts a fresh one", async () => {
+    const { checkout, stubs } = fresh();
+    const cid = "browser-A";
+    const first = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    stubs.clock.advance(11 * MIN); // the hold lapses
+
+    const second = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    expect(second.id).not.toBe(first.id); // a dead hold is not resumed
+    expect(second.status).toBe("ACTIVE");
+    expect((await checkout.get(first.id)).status).toBe("EXPIRED");
+  });
+
+  it("a mid-payment browser is returned to its pending hold, not sent to a second one", async () => {
+    const { checkout, stubs } = fresh();
+    const cid = "browser-A";
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    stubs.payments.nextResult = "unknown";
+    await checkout.complete(s.id, completeBody(s)); // now PAYMENT_PENDING
+
+    const again = await checkout.create({ listingId: "L1", quantity: 1, surface: "web", clientId: cid });
+    expect(again.id).toBe(s.id);
+    expect(again.status).toBe("PAYMENT_PENDING");
+    expect(stubs.inventory.get("L1").available).toBe(3); // still just the one held seat
+  });
+
+  it("without a clientId, each create is independent — the old, un-deduped behaviour", async () => {
+    const { checkout, stubs } = fresh();
+    await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    expect(stubs.inventory.get("L1").available).toBe(2); // two separate holds, no dedup
+  });
+});
+
 describe("versions", () => {
   it("14. device clock is irrelevant: the server never reads client time", async () => {
-    // There is no client-time input anywhere in the API. This test documents that by
-    // completing with a body that carries no timestamp at all.
+    // Since the server owns the clock, there is no client-time input anywhere in the API, and this
+    // test documents that by completing with a body that carries no timestamp at all.
     const { checkout } = fresh();
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
     const body = completeBody(s);
@@ -400,8 +473,9 @@ describe("versions", () => {
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
     stubs.pricing.setTotal("L1", 9900);
     await checkout.acceptPrice(s.id, { version: s.version, priceVersion: 2, surface: "mobile" });
-    // The web tab still holds the pre-accept version; priceVersion alone would also catch it,
-    // but version is the generic "you haven't seen the latest" guard and fires first.
+    // The web tab still holds the pre-accept version. Since `priceVersion` alone would also catch
+    // this, the point is that `version` is the generic "you haven't seen the latest" guard and fires
+    // first.
     expect((await rejects(checkout.complete(s.id, completeBody(s)))).code).toBe("STALE_VERSION");
   });
 

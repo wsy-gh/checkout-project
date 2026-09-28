@@ -20,7 +20,7 @@ const CREATE_FAILED: Record<string, string | undefined> = {
 /** The "event page": pick a quantity and start a checkout on web or mobile. */
 export default async function Listing({ params, searchParams }: Props) {
   const [{ id }, { error }] = await Promise.all([params, searchParams]);
-  await checkout.sweepExpired(id); // lapsed holds go back on the rack before we count seats
+  await checkout.sweepExpired(id); // free any lapsed holds first, so the seat counts below are real
   const l = stubs.inventory.all().find((x) => x.id === id);
   if (!l) notFound();
   const price = stubs.pricing.current(l.id);
@@ -39,10 +39,10 @@ export default async function Listing({ params, searchParams }: Props) {
       </p>
       {error && <p className="banner bad">{CREATE_FAILED[error] ?? error}</p>}
       {/*
-        * Three ways this listing can be unbuyable, each with its own explanation and its own
-        * way out. The alternative is showing a Buy button that can only ever come back as a
-        * rejection — the server would refuse all three (see `create` in
-        * src/checkout/service.ts), but a dead end the fan has to walk into first is not a
+        * Since a listing can be unbuyable in three ways — sales closed, withdrawn, or sold out — and
+        * the alternative would be a Buy button that only ever comes back as a rejection, each case
+        * gets its own explanation and its own way out here. The server refuses all three anyway (see
+        * `create` in src/checkout/service.ts), but a dead end the fan has to walk into first is not a
         * good screen.
         */}
       {salesClosed && !l.withdrawn ? (
@@ -58,15 +58,16 @@ export default async function Listing({ params, searchParams }: Props) {
             <label>
               Qty{" "}
               <select name="quantity" defaultValue={1}>
-                {/* Capped at what is actually available. The server checks again anyway,
-                    since seats can go between this page rendering and the button press. */}
+                {/* Capped at what is actually available. The server checks again anyway, because
+                    seats can go between this page rendering and the button press. */}
                 {Array.from({ length: l.available }, (_, i) => (
                   <option key={i + 1} value={i + 1}>{i + 1}</option>
                 ))}
               </select>
             </label>
           </p>
-          {/* Their own row, below the quantity — these are the commitment, not a field. */}
+          {/* On their own row below the quantity, because these buttons are the commitment, not a
+              form field. */}
           <div className="actions">
             <button type="submit" name="surface" value="web">Start checkout on web</button>
             <button type="submit" name="surface" value="mobile" className="secondary">Start on mobile</button>

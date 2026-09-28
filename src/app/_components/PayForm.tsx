@@ -6,35 +6,31 @@ import { money } from "@/lib/format";
 import { pay, type ActionState } from "@/app/actions";
 
 /**
- * The Pay button.
+ * THE PAY BUTTON.
  *
- * This is a real HTML form that posts to a Server Action, not a button wired to a fetch
- * call, and that difference is deliberate. A plain form is submitted by the browser itself,
- * so it works from the instant the HTML arrives — before React has loaded, and even if the
- * JavaScript never arrives at all. For a fan watching a countdown run down, "the button
- * works now" is worth more than anything JavaScript adds on top.
- *
- * What hydration adds is the disabled state and the "Confirming…" label while the action is
- * in flight. Useful, but nothing the fan needs is waiting on it.
+ * Since a fan watching a countdown run down needs the button to work the instant the page arrives,
+ * this is a real HTML form that posts to a Server Action rather than a button wired to a fetch
+ * call. A plain form is submitted by the browser itself, so it works before React has loaded and
+ * even if the JavaScript never arrives at all — "the button works now" is worth more here than
+ * anything JavaScript adds on top. What hydration adds is only the disabled state and the
+ * "Confirming…" label while the action is in flight, useful but not something the fan needs.
  *
  * THE HIDDEN INPUTS
  *
- * Four values ride along with the press, and each one is a guard rail:
+ * Four values ride along with the press, and each is a guard rail:
  *
- *   version          What this screen was looking at. If the session has changed since —
- *                    the other device accepted a new price, say — the server refuses rather
- *                    than charging against information the fan can no longer see.
+ *   version          What this screen was looking at. If the session has changed since — the other
+ *                    device accepted a new price, say — the server refuses rather than charging
+ *                    against information the fan can no longer see.
  *   priceVersion     Which price they are agreeing to pay.
  *   idempotencyKey   Identifies this attempt. Minted once per page render in
  *                    src/lib/load-checkout-page.ts, so a double-click sends the same value twice and
  *                    the server recognises the second as a repeat instead of a new charge.
  *   surface          Whether this is the web or the simulated phone. Analytics only.
  *
- * There is no card number here, and there is none on the session either. Each surface would
- * collect payment details fresh through the provider's own form; what would reach this
- * action is a short-lived token standing in for them. That keeps card data out of this
- * application entirely.
- *
+ * Since keeping card data out of this application entirely is the goal, there is no card number
+ * here and none on the session either: each surface would collect payment details fresh through the
+ * provider's own form, and what reaches this action is a short-lived token standing in for them.
  * The checks these values feed are all in `complete` in src/checkout/service.ts.
  */
 export function PayForm({ session, surface, idempotencyKey }: { session: Session; surface: Surface; idempotencyKey: string }) {

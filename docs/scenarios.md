@@ -1,6 +1,6 @@
 # Scenarios and instrumentation
 
-Rows 1-31 run against the domain directly, which is where the rules live. Rows 32-50 run
+Rows 1-34 run against the domain directly, which is where the rules live. Rows 35-54 run
 against the route handlers, called as plain functions the way Next.js calls them — that is the
 only layer where a status code or a response envelope exists to get wrong. Rows 17-24 are
 regression tests: each fails if you remove the fix it covers, which I verified by removing them
@@ -39,25 +39,29 @@ one at a time.
 | 29 | Charge confirmed *after* the timeout failed the session | `reconcile_conflict` + `refund_issued`; refund issued once, not twice |
 | 30 | Late-confirmed charge discovered by a sweep, not a direct read | refunded through the independent trigger, not only when the buyer returns |
 | 31 | Abandoned pending charge that was actually declined | seat freed on the next sweep; no refund owed |
-| 32 | Create → resume → complete, three HTTP requests | `201`/`200`/`200`; one session, one order |
-| 33 | Every reply carries `session` + `serverNow` + `no-store` | asserted on every response the suite produces |
-| 34 | Resume reports the price change in the same reply | one request is enough to draw the screen |
-| 35 | `quantity: null` over HTTP | `400` — an absent quantity defaults, a present one never gets coerced |
-| 36 | `complete` with no `idempotencyKey` | `400` from the domain, not a silent charge |
-| 37 | Stale version, expired hold, second device | `409` `STALE_VERSION` / `EXPIRED` / `IN_PROGRESS_ELSEWHERE` |
-| 38 | Rehold when the seats are gone | `409 SOLD_OUT`, and the banner says so on both surfaces |
-| 39 | Declined, then the same attempt replayed | `402` both times — a replayed decline is never a `200` |
-| 40 | A charge landing after the pending timeout failed the session | `409 ALREADY_FAILED`, not a `200` carrying a `FAILED` session |
-| 41 | A body that is not JSON | a `4xx`, never a `500` |
-| 42 | Debug knobs under `NODE_ENV=production` | `404` from both handlers; the state is untouched |
-| 43 | Every unusable body shape — `null`, `[]`, `"str"`, `42`, garbage | `400`, never a `500`; `null` used to crash on property access |
-| 44 | A body over 16 KB | `400` before it is parsed, and nothing held |
-| 45 | `quantity` as `true`, `[5]`, `{}`, `Infinity` | `400` — recognised, not coerced; `"2"` still works, since forms send strings |
-| 46 | `listingId` as `["L1"]`, `123`, `{}` | `400` — `String(["L1"])` is `"L1"`, which is exactly the problem |
-| 47 | `surface` as anything unrecognised, anywhere | treated as absent; never written to the session or the event log |
-| 48 | `idempotencyKey` as `{}`, `[1,2]`, 201 chars | `400` — `String({})` collided every such caller onto one key |
-| 49 | `paymentToken` omitted | `400`; no default, because the default would charge a placeholder |
-| 50 | Unknown fields in an `accept-price` body | ignored; fields are named, not spread |
+| 32 | Repeat create for one browser + listing | resumes the one hold (`hold_resumed_same_client`); seats not drained |
+| 33 | A different browser, same listing | gets its own hold — dedup is per (browser, listing), so buying two events still works |
+| 34 | Browser's hold expired, then it repeats | a dead hold is not resumed; a fresh one is created |
+| 35 | Create → resume → complete, three HTTP requests | `201`/`200`/`200`; one session, one order |
+| 36 | Every reply carries `session` + `serverNow` + `no-store` | asserted on every response the suite produces |
+| 37 | Resume reports the price change in the same reply | one request is enough to draw the screen |
+| 38 | `quantity: null` over HTTP | `400` — an absent quantity defaults, a present one never gets coerced |
+| 39 | `complete` with no `idempotencyKey` | `400` from the domain, not a silent charge |
+| 40 | Stale version, expired hold, second device | `409` `STALE_VERSION` / `EXPIRED` / `IN_PROGRESS_ELSEWHERE` |
+| 41 | Rehold when the seats are gone | `409 SOLD_OUT`, and the banner says so on both surfaces |
+| 42 | Declined, then the same attempt replayed | `402` both times — a replayed decline is never a `200` |
+| 43 | A charge landing after the pending timeout failed the session | `409 ALREADY_FAILED`, not a `200` carrying a `FAILED` session |
+| 44 | A body that is not JSON | a `4xx`, never a `500` |
+| 45 | Debug knobs under `NODE_ENV=production` | `404` from both handlers; the state is untouched |
+| 46 | Every unusable body shape — `null`, `[]`, `"str"`, `42`, garbage | `400`, never a `500`; `null` used to crash on property access |
+| 47 | A body over 16 KB | `400` before it is parsed, and nothing held |
+| 48 | `quantity` as `true`, `[5]`, `{}`, `Infinity` | `400` — recognised, not coerced; `"2"` still works, since forms send strings |
+| 49 | `listingId` as `["L1"]`, `123`, `{}` | `400` — `String(["L1"])` is `"L1"`, which is exactly the problem |
+| 50 | `surface` as anything unrecognised, anywhere | treated as absent; never written to the session or the event log |
+| 51 | `idempotencyKey` as `{}`, `[1,2]`, 201 chars | `400` — `String({})` collided every such caller onto one key |
+| 52 | `paymentToken` omitted | `400`; no default, because the default would charge a placeholder |
+| 53 | Unknown fields in an `accept-price` body | ignored; fields are named, not spread |
+| 54 | A `cid` cookie on `POST /api/sessions` | same-browser holds dedup over HTTP; a cookie-less curl request is not |
 
 ---
 

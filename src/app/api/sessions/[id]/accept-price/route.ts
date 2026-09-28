@@ -7,10 +7,10 @@ type Ctx = { params: Promise<{ id: string }> };
 /**
  * POST /api/sessions/:id/accept-price  { version, priceVersion, surface? }
  *
- * The three fields are named explicitly rather than spread from the body. `{ ...body }` was
- * mass assignment: it forwarded every key a caller chose to send into the domain input, which
- * was harmless only for as long as the domain happened to ignore the extras. Listing the
- * fields means adding one to the input type can never silently make it settable by anyone.
+ * Since `{ ...body }` would be mass assignment — forwarding every key a caller chose to send into
+ * the domain input, harmless only for as long as the domain happened to ignore the extras — the
+ * three fields are named explicitly instead. That way, adding a field to the input type can never
+ * silently make it settable by anyone who guesses its name.
  */
 export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;

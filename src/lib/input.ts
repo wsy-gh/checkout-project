@@ -3,30 +3,31 @@ import type { Surface } from "@/checkout/types";
 /**
  * TURNING UNTRUSTED VALUES INTO TRUSTED ONES
  *
- * Everything arriving from outside — a JSON body, a query string, a form field — is `unknown`
- * until something checks it. TypeScript cannot help: it describes what a value is *supposed*
- * to be, and a cast like `body as CompleteInput` is a promise, not a check. The compiler
- * believes it and the runtime gets whatever the client actually sent.
+ * Since everything arriving from outside — a JSON body, a query string, a form field — is
+ * `unknown` until something actually checks it, and TypeScript cannot do that checking for us
+ * (a cast like `body as CompleteInput` is a promise made to the compiler, not a question asked
+ * of the value, so the compiler believes it and the runtime still gets whatever the client
+ * sent), the app needs a small set of functions that inspect a value at runtime and hand it
+ * back only if it is really the type wanted. That need is not hypothetical: `surface` used to
+ * be cast rather than checked, so `?surface=<script>x</script>` was written straight into the
+ * session and the event log.
  *
- * That is not hypothetical here. `surface` used to be cast rather than checked, so
- * `?surface=<script>x</script>` was written straight into the session and the event log.
- * These three functions are the fix, and the rule they enforce is:
- *
- *     Never coerce. Recognise, or return undefined.
- *
- * `String(["L1"])` is `"L1"` and `Number(true)` is `1`. Coercion invents plausible answers
- * from values that were never valid, so a bad request becomes a successful one instead of a
- * 400. Every function below asks "is this the type I wanted?" and gives up if not, leaving
- * the caller to decide between a default and a rejection.
+ * The three functions below are the fix, and they are all implemented on one rule — never
+ * coerce; recognise, or return undefined — for the following reason. `String(["L1"])` is
+ * `"L1"` and `Number(true)` is `1`, so coercion invents a plausible answer from a value that
+ * was never valid, turning a request that should be a 400 into a successful one. Each function
+ * instead asks "is this the type I wanted?" and gives up if not, leaving the caller to choose
+ * between a default and a rejection.
  */
 
 /**
  * A value that genuinely is a string.
  *
- * `["L1"]` is not `"L1"` and `123` is not `"123"` — both return undefined. `maxLength` exists
- * because a string from a stranger has no natural size: an idempotency key is stored on the
- * session for the session's lifetime, so a caller sending a megabyte of them is a slow memory
- * leak with a 200 response.
+ * Since `["L1"]` is not `"L1"` and `123` is not `"123"`, this returns undefined for anything
+ * that is not already a string. It also takes a `maxLength`, because a string from a stranger
+ * has no natural size and at least one of these — an idempotency key — is stored on the session
+ * for the whole of the session's life, so without a cap a caller sending a megabyte of them
+ * would be a slow memory leak that still answered 200.
  */
 export function asString(value: unknown, maxLength = 256): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength ? value : undefined;
@@ -35,13 +36,13 @@ export function asString(value: unknown, maxLength = 256): string | undefined {
 /**
  * A finite number, or a string that spells one.
  *
- * Strings are accepted because HTML forms have no other way to send a number — the quantity
- * `<select>` submits `"2"`, not `2`. Nothing else is: `true` is not 1, `[5]` is not 5, `{}` is
- * not NaN-and-therefore-fine, and `Infinity` is not a quantity.
- *
- * Returning undefined rather than NaN matters. NaN is falsy in some checks and slips through
- * comparisons — every comparison with NaN is false, so `available < quantity` silently passes
- * for a NaN quantity. Undefined has no such disguise.
+ * Since HTML forms have no way to send a real number — the quantity `<select>` submits the
+ * string `"2"`, not `2` — this needs to accept a numeric string as well as a number, but
+ * nothing looser than that: `true` is not 1, `[5]` is not 5, `{}` is not a quantity, and
+ * `Infinity` is not either. It returns undefined rather than NaN on failure for a specific
+ * reason: NaN is falsy in some checks and slips through comparisons — every comparison with NaN
+ * is false, so a NaN quantity would pass `available < quantity` silently — whereas undefined
+ * has no such disguise and forces the caller to handle the miss.
  */
 export function asNumber(value: unknown): number | undefined {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
@@ -55,15 +56,14 @@ export function asNumber(value: unknown): number | undefined {
 /**
  * One of the two surfaces this app has, or nothing.
  *
- * The single most important function in this file, because `surface` arrives from more places
- * than any other value: a query string on the checkout page, a query string on
- * `GET /api/sessions/:id`, a JSON field on two POST routes, and a hidden form input on every
- * Server Action. Every one of those calls this, so there is exactly one definition of what
- * counts as a surface.
- *
- * Callers treat an unrecognised value as *absent* rather than as an error. The field is
- * telemetry and a choice of wording — never authority — so a typo in a link should render the
- * default surface, not a 400 in the middle of someone's checkout.
+ * Since `surface` arrives from more places than any other value — a query string on the
+ * checkout page, a query string on `GET /api/sessions/:id`, a JSON field on two POST routes,
+ * and a hidden form input on every Server Action — it needs one definition of what counts as a
+ * valid surface, so every one of those places calls this rather than each casting on its own.
+ * An unrecognised value comes back as undefined and callers treat that as *absent* rather than
+ * as an error, because `surface` is telemetry and a choice of wording and never authority, so a
+ * typo in a link should render the default surface, not a 400 in the middle of someone's
+ * checkout.
  */
 export function asSurface(value: unknown): Surface | undefined {
   return value === "web" || value === "mobile" ? value : undefined;

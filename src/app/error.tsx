@@ -4,15 +4,15 @@ import Link from "next/link";
 import { useEffect } from "react";
 
 /**
- * The last resort: an unexpected server error while rendering a page.
+ * THE LAST RESORT: AN UNEXPECTED SERVER ERROR WHILE RENDERING A PAGE.
  *
- * Nothing routine should reach here. Every outcome the domain knows about — expired,
- * withdrawn, declined, confirming, already paid — is a *status* the checkout page renders
- * normally, and an unknown session is a 404. So this screen means a genuine bug, and it
- * says the one thing the fan needs to know: retrying a page render cannot charge anyone.
+ * Since every outcome the domain actually knows about — expired, withdrawn, declined, confirming,
+ * already paid — is a *status* the checkout page renders normally, and an unknown session is a 404,
+ * nothing routine should ever reach here. So this screen means a genuine bug, and it says the one
+ * thing the fan needs to know: retrying a page render cannot charge anyone.
  *
- * `retry()`, not `reset()`: this Next version has both, and only `retry()` re-fetches the
- * boundary's children. `reset()` re-renders the same data, which would just fail again.
+ * It calls `retry()` rather than `reset()` because this Next version has both and only `retry()`
+ * re-fetches the boundary's children; `reset()` re-renders the same data, which would just fail again.
  */
 export default function Error({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   useEffect(() => {

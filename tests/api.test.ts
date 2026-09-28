@@ -11,28 +11,26 @@ import { GET as debugGet, POST as debugPost } from "@/app/api/debug/[knob]/route
 /**
  * THE HTTP BOUNDARY
  *
- * Everything in scenarios.test.ts and concurrency.test.ts calls the domain directly, which is
- * the right place to test what the rules *are*. This file tests the part those cannot see: the
- * translation between an HTTP request and a domain call, which is where a correct state
- * machine still gets handed to clients wrongly.
+ * Since the domain tests (scenarios.test.ts, concurrency.test.ts) call the rules directly and so
+ * cannot see the translation between an HTTP request and a domain call, this file tests that
+ * translation — which is exactly where a correct state machine still gets handed to clients wrongly.
  *
- * Three things only exist at this layer, and all three are load-bearing claims in the README:
+ * Three things exist only at this layer, and all three are load-bearing claims in the README:
  *
- *   THE STATUS CODE. A client that checks `res.ok` before reading the body — which is most of
- *   them, and every `fetch` wrapper — sees only this. A 200 carrying a failed session is a
- *   success to that client. `codes` below pins the whole table.
+ *   THE STATUS CODE. Since most clients — and every `fetch` wrapper — check `res.ok` before reading
+ *   the body, a 200 carrying a failed session reads to them as a success, so the status-code table
+ *   has to be pinned; these tests do that.
  *
- *   THE ENVELOPE. "Every response carries the full session, whether the request succeeded or
- *   not." That is what lets a surface redraw from any rejection without a second request, and
- *   it is asserted here against every response these tests produce rather than claimed in
- *   prose.
+ *   THE ENVELOPE. "Every response carries the full session, whether the request succeeded or not" is
+ *   what lets a surface redraw from any rejection without a second request, so it is asserted against
+ *   every response these tests produce rather than claimed in prose.
  *
- *   `no-store`. A cached checkout page or API reply is a lie the moment anything happens.
+ *   `no-store`, because a cached checkout page or API reply is a lie the moment anything happens.
  *
- * The route handlers are called as plain functions, the way Next.js calls them. No server, no
- * port, no fetch — so these run in the same few milliseconds as the rest of the suite. The one
- * thing that costs is state: these share the process-wide singleton from src/lib/checkout.ts
- * (the real one the app uses, not a fixture), so `resetAll` runs before each test.
+ * The route handlers are called as plain functions, the way Next.js calls them — no server, no port,
+ * no fetch — so these run in the same few milliseconds as the rest of the suite. The one thing that
+ * costs is state: they share the process-wide singleton from src/lib/checkout.ts (the real one the
+ * app uses, not a fixture), so `resetAll` runs before each test.
  */
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -325,6 +323,34 @@ describe("status codes", () => {
  * `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so coercion turns requests that were
  * never valid into successful ones. Each of these was accepted before src/lib/input.ts.
  */
+describe("browser identity dedups holds across sessions", () => {
+  // A create carrying a `cid` cookie, the way a browser would after the Server Action set it.
+  const createWithCid = (cid: string, listingId = "L1", quantity = 1) =>
+    createRoute(
+      new Request("http://t/api/sessions", {
+        method: "POST",
+        headers: { ...JSON_HEADERS, cookie: `cid=${cid}` },
+        body: JSON.stringify({ listingId, quantity }),
+      }),
+    );
+
+  it("the same browser repeating create on one listing keeps getting the same session, not new seats", async () => {
+    const first = await read(await createWithCid("browser-A"));
+    expect(first.status).toBe(201);
+    for (let i = 0; i < 4; i++) {
+      const again = await read(await createWithCid("browser-A"));
+      expect(again.session.id).toBe(first.session.id);
+    }
+    expect(stubs.inventory.get("L1").available).toBe(3); // one seat held across all five requests
+  });
+
+  it("a cookie-less request (curl) is not deduped, matching the old behaviour", async () => {
+    await read(await createRoute(post("/api/sessions", { listingId: "L1", quantity: 1 })));
+    await read(await createRoute(post("/api/sessions", { listingId: "L1", quantity: 1 })));
+    expect(stubs.inventory.get("L1").available).toBe(2); // two independent holds
+  });
+});
+
 describe("input is recognised, not coerced", () => {
   it("refuses values that merely look number-ish", async () => {
     for (const quantity of [true, false, [5], {}, "abc", null, Infinity]) {

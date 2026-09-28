@@ -5,21 +5,17 @@ type Ctx = { params: Promise<{ knob: string }> };
 /**
  * KNOBS FOR MAKING THINGS GO WRONG ON PURPOSE
  *
- * The hard cases in a checkout — a price moving while someone is away, a seller pulling a
- * listing, a payment provider timing out, a hold running out — are all things you cannot
- * wait around for. These routes reach into the stubs in src/checkout/stubs.ts and cause them
- * on demand, which is what makes the whole story demonstrable in scripts/demo.sh.
+ * Since the hard cases in a checkout — a price moving while someone is away, a seller pulling a
+ * listing, a provider timing out, a hold running out — are all things you cannot wait around for,
+ * these routes reach into the stubs in src/checkout/stubs.ts and cause them on demand, which is what
+ * makes the whole story demonstrable in scripts/demo.sh in about a minute rather than on trust.
  *
- * None of this would ship, so `devOnly` below makes that structural rather than a promise in
- * a comment. A route that resets every session or moves the server's clock is not something
- * to leave reachable in a deployed app and trust nobody to find: it is unauthenticated, and
- * one POST wipes the state of every fan mid-checkout. In a production build both handlers
- * answer 404, which is also what an unknown route would say — there is nothing here to
- * discover. It exists because a reviewer should be able to see the interesting behaviour in a
- * minute rather than take it on trust.
- *
- * The check reads the environment on every call rather than once at module load, so a test
- * can set `NODE_ENV=production` and watch the door actually close. See tests/api.test.ts.
+ * Since none of this would ever ship — an unauthenticated route where one POST resets every session
+ * or moves the server's clock is not something to leave reachable and trust nobody to find — that is
+ * made structural rather than a promise in a comment: `devOnly` below returns 404 from both handlers
+ * in a production build, which is also what an unknown route would say, so there is nothing to
+ * discover. It reads the environment on every call rather than once at module load, so a test can set
+ * `NODE_ENV=production` and watch the door actually close. See tests/api.test.ts.
  *
  *
  *   GET  /api/debug/events                     the structured event log
@@ -41,11 +37,12 @@ export async function GET(_req: Request, { params }: Ctx) {
   if (knob === "events") return json(stubs.events.all());
   if (knob === "state")
     return json({
-      // Which process answered. Every session lives in one process's memory, so if two
-      // requests ever report different values here, this deployment is running more than one
-      // instance and sessions are being served from whichever one you happened to reach.
-      // src/lib/checkout.ts refuses to start as a cluster worker; this catches the cases it
-      // cannot see, such as a serverless platform running many isolated instances.
+      // Which process answered. Since every session lives in one process's memory, two requests
+      // that ever report different values here mean this deployment is running more than one
+      // instance and serving sessions from whichever one a request happened to reach.
+      // src/lib/checkout.ts already refuses to start as a cluster worker; reporting the id here
+      // catches the cases that check cannot see, such as a serverless platform running many
+      // isolated instances.
       instance: { id: instanceId, pid: process.pid },
       serverNow: stubs.clock.now(),
       listings: stubs.inventory.all(),

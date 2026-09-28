@@ -3,10 +3,11 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   async headers() {
     // A checkout page is the live state of a hold. `no-store` keeps it out of every cache,
-    // including the browser's back/forward cache, so Back can't show a stale Pay button.
+    // including the browser's back/forward cache, so Back can't show a stale Pay button. The
+    // one checkout route covers both surfaces — `?surface=mobile` is a query string, not a path,
+    // so it matches here too.
     return [
       { source: "/checkout/:id", headers: [{ key: "Cache-Control", value: "no-store" }] },
-      { source: "/m/checkout/:id", headers: [{ key: "Cache-Control", value: "no-store" }] },
       { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
     ];
   },

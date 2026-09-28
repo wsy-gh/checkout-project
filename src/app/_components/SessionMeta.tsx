@@ -1,16 +1,15 @@
 import type { Session, Status, Surface } from "@/checkout/types";
 
 /**
- * A developer inspector, shown on both checkout surfaces.
+ * A DEVELOPER INSPECTOR, SHOWN ON BOTH CHECKOUT SURFACES.
  *
- * This is not product UI — a real fan would never see it. It exists because the interesting
- * behaviour of this app is server-side and otherwise invisible: you cannot tell by looking at
- * a checkout page that the two surfaces share one record, that stale writes are refused, or
- * that the screen is chosen by status rather than by whatever button you pressed. The three
- * fields below are the entire contract between a device and the backend, so surfacing them
- * turns the demo into something you can verify instead of something you have to take on faith.
- *
- * Each field says what it is and what to do to watch it work.
+ * Since the interesting behaviour of this app is server-side and otherwise invisible — you cannot
+ * tell by looking at a checkout page that the two surfaces share one record, that stale writes are
+ * refused, or that the screen is chosen by status rather than by whichever button you pressed —
+ * this panel surfaces the three fields that are the entire contract between a device and the
+ * backend, so the demo becomes something you can verify rather than something you take on faith.
+ * It is not product UI; a real fan would never see it. Each field says what it is and what to do to
+ * watch it work.
  */
 
 /** What each status actually means, since the bare word is not much help on its own. */
@@ -23,8 +22,8 @@ const STATUS_MEANING: Record<Status, string> = {
 };
 
 export function SessionMeta({ session, surface }: { session: Session; surface: Surface }) {
-  // Named by its own heading rather than an aria-label, so the visible title and the
-  // announced one cannot drift apart.
+  // Labelled by its own heading rather than an aria-label, so the visible title and the announced
+  // one cannot drift apart.
   return (
     <section className="inspector" aria-labelledby="inspector-heading">
       <h2 id="inspector-heading">
@@ -47,8 +46,7 @@ export function SessionMeta({ session, surface }: { session: Session; surface: S
       </dl>
       <p className="inspector-now">{STATUS_MEANING[session.status]}</p>
 
-      {/* Open on web where there's room; collapsed inside the phone frame. */}
-      {/* Open on web where there is room; collapsed inside the narrow phone frame. */}
+      {/* Open on web, where there is room; collapsed inside the narrow phone frame. */}
       <details open={surface === "web"}>
         <summary>What am I looking at?</summary>
 

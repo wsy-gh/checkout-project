@@ -14,6 +14,8 @@ Each is a one-line change if the real answer differs.
 | What if the listing is withdrawn mid-hold? | The session fails with its own reason and offers similar listings. Seats are never silently swapped. |
 | Is payment info portable across surfaces? | No. The session stores no payment details. Each surface collects payment fresh. |
 | Who owns a session? | Out of scope. The link is bearer auth — see *Threat model*. |
+| Should one browser be able to hold a listing's whole inventory by repeating Buy → Start → Back? | No. An anonymous `cid` cookie identifies the browser, and `create` resumes its existing live hold per listing instead of taking new seats. Scoped per (browser, listing), so buying two different events still works. |
+| If a browser with a hold picks a new quantity and starts again, does the hold change? | No — it resumes the existing hold at its original quantity. Changing quantity means letting the hold lapse (there is no cancel button in the prototype). A one-line change if product wants "latest quantity wins". |
 
 ## Non-goals
 

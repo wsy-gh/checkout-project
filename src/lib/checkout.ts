@@ -6,18 +6,17 @@ import { v7 as uuidv7 } from "uuid";
 /**
  * THE ONE RUNNING COPY OF THE APP'S STATE
  *
- * Everything server-side reaches the checkout through this file, so there is exactly one
- * store of sessions and one set of stubs for the whole process.
+ * Since everything server-side reaches the checkout through this file, there needs to be exactly
+ * one store of sessions and one set of stubs for the whole process, and this is where they live.
  *
- * It is attached to `globalThis`, which normally you would avoid. The reason is the dev
- * server: when you edit a file, Next.js re-runs the modules that changed. A plain
- * module-level `const` would be rebuilt by that, and you would lose every session mid-demo
- * on each save. Worse, pages, Server Actions and API routes are compiled into separate
- * module graphs, so they could each end up with their *own* store — a session created
- * through the API would come back "not found" from a page. Hanging it off the global keeps
- * one instance for everybody.
+ * They are attached to `globalThis`, which is normally something to avoid, for a reason specific
+ * to the dev server: when a file is edited, Next.js re-runs the modules that changed, so a plain
+ * module-level `const` would be rebuilt on every save and every session would vanish mid-demo.
+ * Worse, pages, Server Actions and API routes compile into separate module graphs that could
+ * each end up with their *own* store, so a session created through the API would come back "not
+ * found" from a page. Hanging the store off the global keeps a single instance for everybody.
  *
- * In production this file is where a database client would go instead. Nothing else in
+ * In production this file is where a database client would go instead, and nothing in
  * src/checkout/ would change, because the service never assumes its storage is a Map.
  */
 const g = globalThis as unknown as {
@@ -29,29 +28,27 @@ const g = globalThis as unknown as {
 /**
  * ONE PROCESS, AND HOW THAT IS ENFORCED
  *
- * The concurrency argument in src/checkout/service.ts rests on a fact about JavaScript: a
- * stretch of code with no `await` in it cannot be interrupted, so a read-then-write is
- * indivisible and needs no lock. That is true *within one process* and says nothing about two.
+ * Since the concurrency argument in src/checkout/service.ts rests on a stretch of code with no
+ * `await` in it being uninterruptible — which is true within one process and says nothing about
+ * two — this app must run as a single process, and rather than trust that, it checks.
  *
- * What happens with two is worth being precise about, because it is not the failure people
- * expect. They do not race over shared state — they have no shared state. Each process gets
- * its own `globalThis`, so each gets its own Map, and a session created by one is simply
- * "not found" by the other. It breaks completely and immediately rather than subtly and
- * occasionally, which is at least the better failure to have.
+ * It is worth being precise about what two processes would do, because it is not the failure
+ * people expect: they would not race over shared state, because they have no shared state. Each
+ * process gets its own `globalThis`, so each gets its own Map, and a session created by one is
+ * simply "not found" by the other. The failure is total and immediate rather than subtle and
+ * occasional, which is at least the better kind to have.
  *
- * So the assumption is checked instead of assumed. Node's cluster module knows whether this
- * process was forked as a worker — which is what a process manager running the app with
- * `instances: 4` does — and refusing to start is far better than serving half the sessions to
- * half the users.
+ * So the assumption is enforced instead of assumed. Node's cluster module reports whether this
+ * process was forked as a worker — which is exactly what a process manager running the app with
+ * `instances: 4` produces — and refusing to boot in that case is far better than serving half
+ * the sessions to half the users. The check cannot catch everything: a serverless platform runs
+ * many isolated instances and none of them is a cluster worker, which is what `instanceId` below
+ * is for — it is minted once per process and reported by GET /api/debug/state, so "am I actually
+ * talking to one server?" becomes a question you answer by refreshing rather than by reasoning.
  *
- * The check cannot catch everything: a serverless platform runs many isolated instances and
- * none of them is a cluster worker. `instanceId` below is the answer to that. It is minted
- * once per process and reported by GET /api/debug/state, so "am I actually talking to one
- * server?" is a question you can answer by refreshing rather than by reasoning.
- *
- * The real fix is a shared store, and the migration is mechanical: the version counter becomes
- * `UPDATE … WHERE id = ? AND version = ?`, and the uninterrupted stretch becomes a
- * transaction. Nothing in src/checkout/ changes shape.
+ * The real fix is a shared store, and that migration is mechanical: the version counter becomes
+ * `UPDATE … WHERE id = ? AND version = ?`, and the uninterrupted stretch becomes a transaction.
+ * Nothing in src/checkout/ changes shape.
  */
 if (cluster.isWorker) {
   throw new Error(
@@ -61,21 +58,20 @@ if (cluster.isWorker) {
   );
 }
 
-/** Identifies this process. If two requests report different values, the note above applies. */
+/** Identifies this process; if two requests ever report different values, the note above applies. */
 export const instanceId: string = (g.__instanceId ??= uuidv7());
 
 export const stubs: Stubs = (g.__stubs ??= makeStubs());
 export const checkout: Checkout = (g.__checkout ??= createCheckout(stubs));
 
-
 /**
- * Wipe everything back to a fresh start. Used by POST /api/debug/reset and at the top of
+ * WIPE EVERYTHING BACK TO A FRESH START. Used by POST /api/debug/reset and at the top of
  * scripts/demo.sh.
  *
- * Note that it empties the existing objects rather than assigning new ones. Any module that
- * already imported `checkout` is holding a reference to the old object, and reassigning here
- * would leave those modules pointing at an abandoned store while everything else used the
- * new one. Emptying in place means every holder sees the reset.
+ * Since other modules import `checkout` and `stubs` and hold onto those references, this needs
+ * to empty the existing objects in place rather than assign new ones: reassigning here would
+ * leave every module that already imported them pointing at an abandoned store while newly
+ * compiled code used the new one. Emptying in place means every holder sees the same reset.
  */
 export function resetAll() {
   stubs.reset();

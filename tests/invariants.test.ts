@@ -3,9 +3,11 @@ import { assertInvariants } from "@/checkout/invariants";
 import { isCheckoutError, type Session } from "@/checkout/types";
 import { MIN, fresh } from "./helpers";
 
-// Scenario 16. A property-style test: random operation sequences, and after every step
-// every session must satisfy the invariants and the store-level rules. No library; a
-// seeded RNG keeps failures reproducible.
+// Scenario 16, a property-style test. Since you cannot write ordinary assertions for a random
+// sequence of operations — you do not know what should have happened — this instead throws random
+// operations at the state machine and checks, after every single step, that every session still
+// satisfies the invariants and the store-level rules, which hold no matter what happened. It uses no
+// property-testing library, just a seeded RNG so any failure is reproducible from its seed.
 
 function rng(seed: number) {
   let x = seed >>> 0;
@@ -54,13 +56,14 @@ describe("invariants under random operation sequences", () => {
             case "rehold": if (id) { const s = await checkout.rehold(id); ids.push(s.id); } break;
           }
         } catch (e) {
-          if (!isCheckoutError(e)) throw e; // domain rejections are expected; anything else is a bug
+          if (!isCheckoutError(e)) throw e; // an expected domain rejection is fine; anything else is a real bug
         }
 
-        // Per-session invariants
+        // Every session must satisfy the per-session invariants after every step.
         for (const s of checkout._all()) assertInvariants(s, stubs.clock.now(), stubs.inventory.salesCutoff(s.listingId));
 
-        // Store-level invariants
+        // ...and the whole store must satisfy the two rules no single-session check could express:
+        // exactly one order id per session, and seats held plus seats available equal to the start count.
         const all = checkout._all();
         const orders = all.filter((s): s is Extract<Session, { status: "COMPLETED" }> => s.status === "COMPLETED").map((s) => s.orderId);
         expect(new Set(orders).size).toBe(orders.length);
