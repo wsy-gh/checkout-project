@@ -15,7 +15,7 @@ import { useElapsed } from "./useElapsed";
  * exactly why this app never needs to know what timezone anyone is in.
  */
 export function EventTime({ startsAt, serverNow }: { startsAt: number; serverNow: number }) {
-  const untilStart = startsAt - serverNow - useElapsed();
+  const untilStart = startsAt - serverNow - useElapsed(serverNow);
   const started = untilStart <= 0;
 
   return (

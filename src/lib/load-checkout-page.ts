@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { isCheckoutError, type Surface } from "@/checkout/types";
 import { checkout, stubs } from "@/lib/checkout";
-import { uuidv7 } from "@/lib/uuid";
+import { v7 as uuidv7 } from "uuid";
 
 /**
  * Load everything a checkout page needs, on the server, before any HTML is sent.
@@ -39,9 +39,9 @@ export async function loadCheckoutPage(id: string, surface: Surface) {
       // the moment it was minted. Nothing here depends on that — the keys live in a Map that
       // is discarded on restart — but these are exactly the values that end up as a database
       // column and in other systems' logs, where random ordering is expensive to undo later.
-      // See src/lib/uuid.ts. The time comes from the injected clock like every other instant
+      // The time comes from the injected clock like every other instant
       // in this app, so a test that fast-forwards gets keys that agree with its own timeline.
-      idempotencyKey: uuidv7(stubs.clock.now()),
+      idempotencyKey: uuidv7({ msecs: stubs.clock.now() }),
     };
   } catch (e) {
     if (isCheckoutError(e) && e.code === "NOT_FOUND") notFound();

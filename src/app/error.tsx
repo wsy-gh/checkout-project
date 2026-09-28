@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { copy } from "@/lib/copy";
 import { useEffect } from "react";
 
 /**
@@ -22,12 +21,15 @@ export default function Error({ error, retry }: { error: Error & { digest?: stri
 
   return (
     <main className="web">
-      <h1>{copy.error.title}</h1>
-      <p className="muted">{copy.error.body}</p>
+      <h1>Something went wrong on our end</h1>
+      <p className="muted">
+        This is a display problem, not a payment one — loading a page never charges a card. If you were
+        mid-checkout, your hold is unchanged and reopening the link shows its real state.
+      </p>
       {error.digest && <p className="meta">error {error.digest}</p>}
       <div className="actions">
-        <button type="button" onClick={() => retry()}>{copy.error.retry}</button>
-        <Link className="button secondary" href="/">{copy.notFound.browse}</Link>
+        <button type="button" onClick={() => retry()}>Try again</button>
+        <Link className="button secondary" href="/">Browse events</Link>
       </div>
     </main>
   );

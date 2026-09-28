@@ -13,7 +13,7 @@ because the server was the only thing that ever knew.
 ```
 npm install
 npm run dev     # http://localhost:3000
-npm test        # 80 tests, under a second
+npm test        # 78 tests, under a second
 npm run demo    # the whole story over the HTTP API, in curl (needs the dev server running)
 ```
 
@@ -99,7 +99,7 @@ POST /api/sessions/:id/complete       { version, priceVersion, idempotencyKey, p
 POST /api/sessions/:id/rehold          start a fresh session after one expired
 ```
 
-`INVALID_REQUEST` 400 · `NOT_FOUND` 404 · `PAYMENT_DECLINED` 402 · `RATE_LIMITED` 429 · and 409 for
+`INVALID_REQUEST` 400 · `NOT_FOUND` 404 · `PAYMENT_DECLINED` 402 · and 409 for
 `STALE_VERSION`, `PRICE_CHANGED`, `EXPIRED`, `IN_PROGRESS_ELSEWHERE`, `ALREADY_COMPLETED`,
 `ALREADY_FAILED`, `INVENTORY_WITHDRAWN` (which brings other listings with it), `SOLD_OUT`,
 `SALES_CLOSED`.
@@ -132,15 +132,10 @@ malformed one is a 400 with a code rather than a 500; they are capped at 16 KB; 
 that parses to something other than a JSON object (`null`, `[]`, a bare string) is treated as
 no fields at all.
 
-`POST /api/sessions` is rate limited to 20 holds per minute per caller — the only endpoint
-that takes seats off the market, and so the only one worth abusing. That bounds the *speed* of
-bulk inventory denial; bounding the *total* needs a durable identity, which is the auth this
-prototype doesn't have.
-
 ## How web and mobile share one session
 
 Both surfaces are the same route over the same ID and call the same loader
-([`page-data.ts`](src/lib/page-data.ts)). `/checkout/:id` is the page and `?surface=mobile`
+([`load-checkout-page.ts`](src/lib/load-checkout-page.ts)). `/checkout/:id` is the page and `?surface=mobile`
 re-dresses it in a phone frame; there is no second route. Resuming is a read, and what gets
 drawn is decided by one switch on the session's status with no fallback branch — add a status
 and the build breaks until someone decides what the fan should see. Nothing on the device is
@@ -191,9 +186,17 @@ left at a dead end. "Still valid" means more than "not expired yet".
 **The payment didn't resolve.** The payment's ID is written down before the charge is
 attempted, so if this server died one line later the next read can ask the provider what
 happened to it. A charge that throws is "we don't know" rather than a failure: the seats stay
-held and the fan is told not to retry. A timeout eventually writes the session off, and if a
-late success then arrives for a session already written off, that gets logged as owing
-somebody a refund.
+held and the fan is told not to retry.
+
+A payment nobody answers for cannot be left holding its seats forever, so resolving it is
+triggered by more than the original fan coming back. `sweepExpired` — already the thing that
+frees lapsed holds, and run by every `create` and every page that shows seat counts — now also
+reconciles a pending payment past its timeout: it asks the provider and settles, so the seats a
+walked-away fan was holding go back for the next buyer. And a failed session keeps the payment's
+reference (`unresolvedIntentId`) so a *later* read can ask again: if a charge we had already
+written off turns out to have landed, the fan is refunded through `payments.refund` and the
+conflict is recorded (`reconcile_conflict`, `refund_issued`) rather than the money vanishing
+silently. Both paths are covered by regression tests in `tests/scenarios.test.ts`.
 
 ## Timing, money, and what renders before JavaScript
 
@@ -237,11 +240,10 @@ Session IDs are `cs_` plus a UUIDv7, so the link is at least unguessable: they w
 `cs_0002`, which meant the whole store could be walked by counting. Nothing carries personal
 information.
 
-Holds cost nothing to create, so `POST /api/sessions` is rate limited per caller. That is only
-half the fix — it bounds how *fast* one caller can deny inventory, not how *much* they can hold
-at once, and the per-person cap that would bound the total needs a durable identity rather than
-an IP address. In production the limiter also belongs at the edge, where it sees every request
-instead of the share that reached one server.
+Holds cost nothing to create, so someone could take seats off the market in bulk. Rate limiting
+slows that down and a per-person cap on live holds bounds it, but both want a durable notion of
+who someone is — the auth this prototype doesn't have — so they are listed under *With more time*
+rather than half-built here.
 
 The app keeps every session in one process's memory, and the concurrency argument in
 `service.ts` depends on that. Two processes would not race — they would each have their own
@@ -257,10 +259,22 @@ not something to leave reachable and trust nobody to find.
 
 ## With more time
 
-Signed session tokens, a per-person hold limit, rate limiting. A real payment provider, with
-webhooks and a job that reconciles against it. A database — the version counter becomes
-`UPDATE … WHERE id = ? AND version = ?`, the uninterrupted section becomes a transaction, and
-nothing in `src/checkout/` changes. Push updates instead of polling, and a real scheduler for
+Signed session tokens, and a signed-in identity to hang two things off: a per-person cap on
+concurrent holds, and **rate limiting** on hold creation. An earlier version rate-limited by IP
+address, but an IP is a guess — shared behind one office router, changed with a tap — so it was
+removed rather than shipped as protection that doesn't hold; done properly it belongs at the
+edge, keyed to a real identity.
+
+A **translation layer**. The fan-facing wording is inline in the components and English-only. It
+reads slightly differently on web and mobile, so the natural next step is a small `t(locale, …)`
+layer that keeps those two variants and adds languages — whole phrases with the value inside
+(`Accept ${total}`) so a translator can reorder them, and `Intl.PluralRules` for counts, rather
+than string concatenation that bakes in English word order.
+
+A real payment provider, with webhooks and a reconciliation job — the `payments.refund` and
+reconcile-on-read paths here are the shape of it, stubbed. A database — the version counter
+becomes `UPDATE … WHERE id = ? AND version = ?`, the uninterrupted section becomes a transaction,
+and nothing in `src/checkout/` changes. Push updates instead of polling, and a real scheduler for
 the "your hold is running out" notice, which is wired up but has nothing to fire it while the
 clock is a stub.
 

@@ -29,7 +29,7 @@ describe("invariants under random operation sequences", () => {
         try {
           switch (op) {
             case "create": {
-              const s = checkout.create({ listingId: pick(listings), quantity: 1, surface: pick(["web", "mobile"] as const) });
+              const s = await checkout.create({ listingId: pick(listings), quantity: 1, surface: pick(["web", "mobile"] as const) });
               ids.push(s.id);
               break;
             }
@@ -51,7 +51,7 @@ describe("invariants under random operation sequences", () => {
             case "withdraw": stubs.inventory.withdraw(pick(listings)); break;
             case "restore": stubs.inventory.restore(pick(listings)); break;
             case "reprice": stubs.pricing.setTotal(pick(listings), 1000 + Math.floor(rand() * 9000)); break;
-            case "rehold": if (id) { const s = checkout.rehold(id); ids.push(s.id); } break;
+            case "rehold": if (id) { const s = await checkout.rehold(id); ids.push(s.id); } break;
           }
         } catch (e) {
           if (!isCheckoutError(e)) throw e; // domain rejections are expected; anything else is a bug

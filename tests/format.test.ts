@@ -11,14 +11,18 @@ describe("money", () => {
     expect(money(-2500)).toBe("-$25.00");
   });
 
-  it("is exact for every amount an order can produce", () => {
-    // The only division in the app. Brute-force it rather than assume IEEE-754 behaves.
-    for (let cents = 0; cents <= 2_000_000; cents++) {
+  it("is exact across the boundaries where the one division could go wrong", () => {
+    // `money` divides by 100 — the only division in the app — so the risk is a cent that
+    // rounds the wrong way. Rather than brute-force two million values, check the cases that
+    // actually exercise the rounding: every cents-place 0..99 at a few magnitudes, plus values
+    // chosen to land near a binary rounding step.
+    const check = (cents: number) => {
       const expected = `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
-      if (money(cents).replace(/[$,]/g, "") !== expected) {
-        throw new Error(`money(${cents}) = ${money(cents)}, expected $${expected}`);
-      }
-    }
+      expect(money(cents).replace(/[$,]/g, "")).toBe(expected);
+    };
+    for (let c = 0; c < 100; c++) check(c); // every cents place
+    for (const base of [0, 100, 12_345_600, 99_999_900, 199_999_900]) for (let c = 0; c < 100; c++) check(base + c);
+    for (const tricky of [1, 29, 57, 99, 8_900, 6_400, 4_200, 1_000_000 - 1, 2_000_000]) check(tricky);
   });
 
   it("does not vary with the runtime locale, so SSR and the browser agree", () => {

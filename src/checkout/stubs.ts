@@ -1,5 +1,5 @@
 import type { Alternative, Deps, PaymentOutcome } from "./types";
-import { uuidv7 } from "@/lib/uuid";
+import { v7 as uuidv7 } from "uuid";
 
 /**
  * STAND-INS FOR EVERYTHING OUTSIDE THIS APP
@@ -84,8 +84,9 @@ export function makeStubs(opts: { now?: number } = {}) {
   // v7 rather than v4 because it begins with a millisecond timestamp, so IDs sort by when they
   // were minted. Against a real database that keeps inserts at one end of the index instead of
   // scattered through it; here it just means `_all()` comes back in a sensible order. The 74
-  // random bits are what make it unguessable. See src/lib/uuid.ts.
-  const ids = { next: (prefix: string) => `${prefix}_${uuidv7(clock.now())}` };
+  // random bits are what make it unguessable. The timestamp is taken from the injected clock,
+  // not `Date.now()`, so a test that fast-forwards produces IDs consistent with its own timeline.
+  const ids = { next: (prefix: string) => `${prefix}_${uuidv7({ msecs: clock.now() })}` };
 
   seed();
 
@@ -137,6 +138,7 @@ export function makeStubs(opts: { now?: number } = {}) {
 
   // ---- payments: scripted outcomes ----
   const intents = { get: (k: string) => state.intents.get(k), set: (k: string, v: PaymentOutcome) => state.intents.set(k, v) };
+  const refunds: string[] = [];
   const payments = {
     /**
      * What the next charge should do. Set it, call complete, get that outcome.
@@ -164,6 +166,16 @@ export function makeStubs(opts: { now?: number } = {}) {
     async status(intentId: string): Promise<PaymentOutcome> {
       return intents.get(intentId) ?? "unknown";
     },
+    /**
+     * Return money for a charge we should not have kept.
+     *
+     * A real provider call; here it just records the reference, which is enough to prove the
+     * reconciliation path actually issued the refund rather than only logging its intent to.
+     * Called from the reconcile-conflict path in service.ts.
+     */
+    refund(intentId: string) { refunds.push(intentId); },
+    /** Test/debug: which intents have been refunded. */
+    refunded: () => [...refunds],
     // knob
     setStatus(intentId: string, o: PaymentOutcome) { intents.set(intentId, o); },
   };
@@ -228,6 +240,7 @@ export function makeStubs(opts: { now?: number } = {}) {
     seed();
     payments.nextResult = "ok";
     payments.delayMs = 0;
+    refunds.length = 0;
     events.clear();
   }
 

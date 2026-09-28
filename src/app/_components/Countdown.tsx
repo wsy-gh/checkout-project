@@ -1,6 +1,6 @@
 "use client";
 
-import { copy } from "@/lib/copy";
+import { useRouter } from "next/navigation";
 import { useElapsed } from "./useElapsed";
 
 /**
@@ -12,8 +12,9 @@ import { useElapsed } from "./useElapsed";
  * right number in it, before any JavaScript has loaded. For someone under time pressure,
  * that is the single most important thing on the page.
  *
- * The ticking is added afterwards by useElapsed.ts, which explains why it measures elapsed
- * time rather than reading the clock.
+ * The ticking is added afterwards by useElapsed.ts, which measures elapsed time from
+ * `serverNow` rather than reading the clock, and restarts if the page re-fetches and hands us
+ * a fresh `serverNow`.
  *
  * ABOUT THE SCREEN-READER LINE AT THE BOTTOM
  *
@@ -33,25 +34,41 @@ export function Countdown({
   serverNow: number;
   compact?: boolean;
 }) {
-  const elapsed = useElapsed();
+  const router = useRouter();
+  const elapsed = useElapsed(serverNow);
   const ms = Math.max(0, expiresAt - serverNow - elapsed);
 
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   const urgent = ms < 2 * 60000;
+  const ended = ms === 0;
 
   // Announce at thresholds, not every second. The digits change once a second, so a live
   // region wrapped around them would talk over everything else on the page; this string only
   // changes when the fan crosses a boundary worth interrupting them for.
-  const announcement =
-    ms === 0 ? copy.a11y.holdEnded : ms <= 30_000 ? copy.a11y.thirtySeconds : urgent ? copy.a11y.twoMinutes : "";
+  const announcement = ended ? "Your hold has ended." : ms <= 30_000 ? "30 seconds left." : urgent ? "2 minutes left on your hold." : "";
 
   return (
     <>
       <div className={`countdown${urgent ? " urgent" : ""}${compact ? " compact" : ""}`}>
-        {ms === 0 ? "Hold ended" : `${m}:${s.toString().padStart(2, "0")}`}
-        <span className="countdown-label">{ms === 0 ? "— refresh to continue" : "left on your hold"}</span>
+        {ended ? "Hold ended" : `${m}:${s.toString().padStart(2, "0")}`}
+        <span className="countdown-label">{ended ? "— refresh to continue" : "left on your hold"}</span>
       </div>
+
+      {/*
+        * An explicit way to act once the hold has run out. The page re-fetches itself on Back
+        * and across tabs (SessionSync), but a hold expiring while the fan simply sits on the
+        * page has no such trigger, and the simulated phone has no browser refresh button of its
+        * own. So the timer offers one. `router.refresh()` re-runs the server render, which reads
+        * the session, notices the deadline passed, and draws the "your hold ended" screen with
+        * its "try again". Left off the compact home-page banner, which has its own controls.
+        */}
+      {ended && !compact && (
+        <button type="button" className="button" onClick={() => router.refresh()}>
+          Refresh
+        </button>
+      )}
+
       <div className="sr-only" role="status" aria-live="polite">
         {announcement}
       </div>

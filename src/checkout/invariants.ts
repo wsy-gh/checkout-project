@@ -26,6 +26,9 @@ export function assertInvariants(s: Session, now: number, salesCutoff: number): 
   if (s.status === "COMPLETED") must(s.orderId && s.paymentIntentId, "COMPLETED needs orderId + paymentIntentId");
   if (s.status !== "COMPLETED") must(!("orderId" in s), "only COMPLETED may carry orderId");
   if (s.status === "FAILED") must(s.failReason, "FAILED needs a reason");
+  // Only a failed session may still be chasing a payment we could not resolve. Anywhere else
+  // the field is a leak from a botched transition, which `strip` exists to prevent.
+  if (s.status !== "FAILED") must(!("unresolvedIntentId" in s), "only FAILED may carry unresolvedIntentId");
 
   // PENDING always has something to reconcile against.
   if (s.status === "PAYMENT_PENDING") must(s.paymentIntentId && s.pendingSince > 0, "PENDING needs an intent");

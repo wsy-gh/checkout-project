@@ -2,7 +2,7 @@ import { RecoveryState } from "@/app/_components/RecoveryState";
 import { SessionMeta } from "@/app/_components/SessionMeta";
 import { SurfaceLinks } from "@/app/_components/SurfaceLinks";
 import { asSurface } from "@/lib/input";
-import { loadCheckoutPage } from "@/lib/page-data";
+import { loadCheckoutPage } from "@/lib/load-checkout-page";
 
 // A checkout page must never be served from a cache: it's the live state of a hold.
 export const dynamic = "force-dynamic";

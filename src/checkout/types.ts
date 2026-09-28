@@ -88,7 +88,11 @@ export type Session = Base &
     | { status: "PAYMENT_PENDING"; paymentIntentId: string; pendingSince: number }
     | { status: "COMPLETED"; paymentIntentId: string; orderId: string }
     | { status: "EXPIRED"; successorSessionId?: string }
-    | { status: "FAILED"; failReason: FailReason }
+    // `unresolvedIntentId` is present only when a payment was in flight and we never got a
+    // definite answer — a PENDING_TIMEOUT failure. It is the reference a later read uses to
+    // ask the provider again, so a charge that landed after we gave up is still noticed and
+    // refunded. A DECLINED failure does not carry it: a decline is a certain "no money moved".
+    | { status: "FAILED"; failReason: FailReason; unresolvedIntentId?: string }
   );
 
 export type SessionOf<S extends Status> = Extract<Session, { status: S }>;
@@ -107,8 +111,7 @@ export type ErrorCode =
   | "INVENTORY_WITHDRAWN"
   | "SOLD_OUT"
   | "SALES_CLOSED"
-  | "PAYMENT_DECLINED"
-  | "RATE_LIMITED";
+  | "PAYMENT_DECLINED";
 
 export const HTTP_STATUS: Record<ErrorCode, number> = {
   INVALID_REQUEST: 400,
@@ -123,10 +126,6 @@ export const HTTP_STATUS: Record<ErrorCode, number> = {
   SOLD_OUT: 409,
   SALES_CLOSED: 409,
   PAYMENT_DECLINED: 402,
-  // 429 is the only code here that is not about this fan's session at all — it is about how
-  // many they have started. It therefore travels without one, which is why `session` is
-  // optional on CheckoutError.
-  RATE_LIMITED: 429,
 };
 
 export type PriceChange = { from: number; to: number; newPriceVersion: number };
@@ -215,6 +214,8 @@ export interface Deps {
     /** `token` is what provider-hosted fields hand back; the stub ignores it. */
     charge(intentId: string, token?: string): Promise<PaymentOutcome>;
     status(intentId: string): Promise<PaymentOutcome>;
+    /** Refund a charge we later discover landed on a session we had already written off. */
+    refund(intentId: string): void;
   };
   events: { emit(name: string, data: Record<string, unknown>): void };
   /** The return path: what brings a fan back before the hold lapses. */

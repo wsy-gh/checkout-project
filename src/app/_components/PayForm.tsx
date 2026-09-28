@@ -26,7 +26,7 @@ import { pay, type ActionState } from "@/app/actions";
  *                    than charging against information the fan can no longer see.
  *   priceVersion     Which price they are agreeing to pay.
  *   idempotencyKey   Identifies this attempt. Minted once per page render in
- *                    src/lib/page-data.ts, so a double-click sends the same value twice and
+ *                    src/lib/load-checkout-page.ts, so a double-click sends the same value twice and
  *                    the server recognises the second as a repeat instead of a new charge.
  *   surface          Whether this is the web or the simulated phone. Analytics only.
  *

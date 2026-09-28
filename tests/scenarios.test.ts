@@ -85,12 +85,12 @@ describe("expiry", () => {
     expect(resumed.status).toBe("EXPIRED");
     expect(stubs.inventory.get("L1").available).toBe(4);
 
-    const next = checkout.rehold(s.id);
+    const next = await checkout.rehold(s.id);
     expect(next.id).not.toBe(s.id);
     expect(next.status).toBe("ACTIVE");
     const old = await checkout.get(s.id);
     expect(old.status === "EXPIRED" && old.successorSessionId).toBe(next.id);
-    expect(checkout.rehold(s.id).id).toBe(next.id); // idempotent
+    expect((await checkout.rehold(s.id)).id).toBe(next.id); // idempotent
   });
 
   it("8. timer hits zero mid-payment → payment finishes, seat not released", async () => {
@@ -248,7 +248,7 @@ describe("inventory", () => {
   it("a malformed quantity is rejected, not coerced into the inventory counter", async () => {
     const { checkout, stubs } = fresh();
     for (const quantity of [NaN, 0, -1, 1.5]) {
-      expect((await rejects(Promise.resolve().then(() => checkout.create({ listingId: "L1", quantity, surface: "web" })))).code)
+      expect((await rejects(checkout.create({ listingId: "L1", quantity, surface: "web" }))).code)
         .toBe("INVALID_REQUEST");
     }
     expect(stubs.inventory.get("L1").available).toBe(4); // untouched
@@ -279,7 +279,7 @@ describe("inventory", () => {
     // One minute after it, `min(now + window, cutoff)` would hand back a deadline in the
     // past: an ACTIVE session the next read immediately expires. Refuse instead.
     stubs.clock.advance(2 * MIN);
-    expect((await rejects(Promise.resolve().then(() => checkout.create({ listingId: "L2", quantity: 1, surface: "web" })))).code)
+    expect((await rejects(checkout.create({ listingId: "L2", quantity: 1, surface: "web" }))).code)
       .toBe("SALES_CLOSED");
 
     // Both seats are free: the sweep at the top of `create` returned the lapsed one, and the
@@ -290,7 +290,89 @@ describe("inventory", () => {
   it("sold out → SOLD_OUT on create", async () => {
     const { checkout } = fresh();
     await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
-    expect((await rejects(Promise.resolve().then(() => checkout.create({ listingId: "L3", quantity: 1, surface: "web" })))).code).toBe("SOLD_OUT");
+    expect((await rejects(checkout.create({ listingId: "L3", quantity: 1, surface: "web" }))).code).toBe("SOLD_OUT");
+  });
+});
+
+describe("abandoned pending payments (reviewer P1-1, P1-2)", () => {
+  it("a pending payment nobody re-reads still frees its seats for the next fan", async () => {
+    // P1-1. Reserve the only seat on L3, get no answer from the provider, walk away. Before
+    // the fix the seat stayed held forever, because only ACTIVE sessions were swept and the
+    // pending timeout only fired when someone read that particular session.
+    const { checkout, stubs } = fresh();
+    const abandoned = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
+    stubs.payments.nextResult = "unknown";
+    await checkout.complete(abandoned.id, completeBody(abandoned));
+    expect(stubs.inventory.get("L3").available).toBe(0);
+
+    stubs.clock.advance(11 * MIN); // long past the 2-minute pending timeout; nobody reads it
+
+    // The next fan's create sweeps the listing, which now also reconciles the timed-out
+    // pending hold: it asks the provider (still "unknown"), times it out, and frees the seat.
+    const next = await checkout.create({ listingId: "L3", quantity: 1, surface: "mobile" });
+    expect(next.status).toBe("ACTIVE");
+    expect((await checkout.get(abandoned.id)).status).toBe("FAILED");
+    expect(stubs.events.all().filter((e) => e.name === "session_failed")).toHaveLength(1);
+  });
+
+  it("a charge that lands after the timeout already failed the session is still refunded", async () => {
+    // P1-2. unknown → timeout fails the session and releases the seat → THEN the provider
+    // confirms the charge went through. Before the fix, no read ever checked the provider
+    // again, so the fan was charged with nobody the wiser: zero reconcile_conflict events.
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    stubs.payments.nextResult = "unknown";
+    await checkout.complete(s.id, completeBody(s));
+
+    stubs.clock.advance(3 * MIN);
+    const failed = await checkout.get(s.id);
+    expect(failed.status === "FAILED" && failed.failReason).toBe("PENDING_TIMEOUT");
+    expect(stubs.inventory.get("L1").available).toBe(4);
+
+    stubs.payments.setStatus(s.id, "ok"); // the provider finally makes up its mind: charged
+
+    const reconciled = await checkout.get(s.id, "mobile");
+    expect(reconciled.status).toBe("FAILED"); // stays failed — the seat is already sold on
+    expect(stubs.events.all().filter((e) => e.name === "reconcile_conflict")).toHaveLength(1);
+    expect(stubs.events.all().filter((e) => e.name === "refund_issued")).toHaveLength(1);
+    expect(stubs.payments.refunded()).toEqual([s.id]);
+
+    // Idempotent: reading it again does not refund twice.
+    await checkout.get(s.id);
+    await checkout.get(s.id, "web");
+    expect(stubs.payments.refunded()).toEqual([s.id]);
+  });
+
+  it("a late-confirmed charge discovered during a sweep is refunded too", async () => {
+    // The same reconciliation via the independent trigger (a sweep) rather than a direct read,
+    // which is what makes it work even if the abandoning fan never comes back.
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
+    stubs.payments.nextResult = "unknown";
+    await checkout.complete(s.id, completeBody(s));
+    stubs.clock.advance(3 * MIN);
+    await checkout.get(s.id); // times out → FAILED/PENDING_TIMEOUT, still carrying its intent
+    stubs.payments.setStatus(s.id, "ok");
+
+    await checkout.sweepExpired(); // a different fan loading a page triggers this
+    expect(stubs.events.all().filter((e) => e.name === "refund_issued")).toHaveLength(1);
+    expect(stubs.payments.refunded()).toEqual([s.id]);
+  });
+
+  it("a pending charge that turns out declined releases the seat on the next sweep", async () => {
+    // The seat-freeing path when the abandoned charge was in fact declined: no refund owed.
+    const { checkout, stubs } = fresh();
+    const s = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
+    stubs.payments.nextResult = "unknown";
+    await checkout.complete(s.id, completeBody(s));
+    stubs.clock.advance(11 * MIN);
+    stubs.payments.setStatus(s.id, "declined"); // provider: that card was refused
+
+    const next = await checkout.create({ listingId: "L3", quantity: 1, surface: "web" });
+    expect(next.status).toBe("ACTIVE");
+    const failed = await checkout.get(s.id);
+    expect(failed.status === "FAILED" && failed.failReason).toBe("DECLINED");
+    expect(stubs.payments.refunded()).toEqual([]); // nothing to refund
   });
 });
 

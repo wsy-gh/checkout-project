@@ -1,6 +1,5 @@
 import Link from "next/link";
 import type { Session, Surface } from "@/checkout/types";
-import { copy } from "@/lib/copy";
 import { checkoutPath } from "@/lib/routes";
 
 /**
@@ -57,7 +56,7 @@ function NewTab() {
   return (
     <>
       <span aria-hidden="true">↗</span>
-      <span className="sr-only">{copy.a11y.opensInNewTab}</span>
+      <span className="sr-only">(opens in a new tab)</span>
     </>
   );
 }

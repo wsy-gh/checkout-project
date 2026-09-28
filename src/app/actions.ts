@@ -30,11 +30,11 @@ export async function createSession(formData: FormData): Promise<void> {
   const surface = asSurface(formData.get("surface")) ?? "web";
   let id: string;
   try {
-    id = checkout.create({
+    id = (await checkout.create({
       listingId: String(formData.get("listingId")),
       quantity: Number(formData.get("quantity") ?? 1),
       surface,
-    }).id;
+    })).id;
   } catch (e) {
     if (isCheckoutError(e)) redirect(`/listing/${formData.get("listingId")}?error=${e.code}`);
     throw e;
@@ -81,7 +81,7 @@ export async function acceptPrice(formData: FormData): Promise<void> {
 export async function rehold(formData: FormData): Promise<void> {
   let next;
   try {
-    next = checkout.rehold(String(formData.get("id")));
+    next = await checkout.rehold(String(formData.get("id")));
   } catch (e) {
     // Someone else took the seats in the meantime. Re-render the expired session, which
     // already knows how to say so — never an error page.

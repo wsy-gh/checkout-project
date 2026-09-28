@@ -375,6 +375,20 @@ describe("input is recognised, not coerced", () => {
     expect((await read(await resume(s.id))).session.status).toBe("ACTIVE");
   });
 
+  it("an idempotency key that names an inherited property is not mistaken for a replay", async () => {
+    // Reviewer P2-5. The idempotency map is a plain object, so "constructor" (and "toString",
+    // "hasOwnProperty", …) match an inherited property. Before the fix, a first-ever attempt
+    // with such a key was turned away as IN_PROGRESS_ELSEWHERE against a session that was still
+    // active. It must complete normally.
+    for (const key of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+      const s = await start("L1");
+      const paid = await read(await pay(s, key));
+      expect(paid.status, `key: ${key}`).toBe(200);
+      expect(paid.session.status).toBe("COMPLETED");
+      resetAll();
+    }
+  });
+
   it("requires a payment token rather than inventing one", async () => {
     // The stub ignores the token, so a missing one silently "worked" — and that same path
     // would attempt a charge against a placeholder the day a real provider is wired in.
@@ -406,53 +420,6 @@ describe("input is recognised, not coerced", () => {
     expect(after.session?.status).toBe("ACTIVE");
     expect(after.session?.quotedTotal).toBe(9900); // the real new price, not the injected 1
     expect(after.session?.lastSeenOn).toBe("web"); // not "INJECTED"
-  });
-});
-
-describe("holds are rate limited", () => {
-  it("lets a normal fan through and stops a loop", async () => {
-    const caller = { "x-forwarded-for": "203.0.113.9" };
-    const create = () =>
-      createRoute(new Request("http://t/api/sessions", {
-        method: "POST",
-        headers: { ...JSON_HEADERS, ...caller },
-        body: JSON.stringify({ listingId: "L1", quantity: 1 }),
-      }));
-
-    // The limit is 20/minute. L1 only has 4 seats, so the first few succeed and the rest are
-    // SOLD_OUT — what matters is that the 21st is refused for a different reason entirely.
-    const codes: number[] = [];
-    for (let i = 0; i < 22; i++) codes.push((await create()).status);
-    expect(codes.slice(0, 20).every((c) => c !== 429)).toBe(true);
-    expect(codes[20]).toBe(429);
-    expect(codes[21]).toBe(429);
-
-    // A different caller is unaffected — the limit is per caller, not global.
-    const other = await createRoute(post("/api/sessions", { listingId: "L2", quantity: 1 }));
-    expect(other.status).not.toBe(429);
-
-    // And the window reopens. The limiter reads the same injected clock as everything else.
-    stubs.clock.advance(61_000);
-    expect((await create()).status).not.toBe(429);
-  });
-
-  it("answers 429 with a code, and holds nothing", async () => {
-    const caller = { "x-forwarded-for": "198.51.100.4" };
-    const create = () =>
-      createRoute(new Request("http://t/api/sessions", {
-        method: "POST",
-        headers: { ...JSON_HEADERS, ...caller },
-        body: JSON.stringify({ listingId: "L3", quantity: 1 }),
-      }));
-    for (let i = 0; i < 20; i++) await create();
-    const res = await create();
-    const body = (await res.json()) as Envelope;
-    expect(res.status).toBe(429);
-    expect(body.code).toBe("RATE_LIMITED");
-    // A refusal that never reached the domain carries no session, which is the one case the
-    // envelope rule cannot satisfy — it is about the caller, not about any one checkout.
-    expect(body.session).toBeUndefined();
-    expect(res.headers.get("cache-control")).toBe("no-store");
   });
 });
 

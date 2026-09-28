@@ -1,8 +1,7 @@
 import cluster from "node:cluster";
 import { createCheckout, type Checkout } from "@/checkout/service";
 import { makeStubs, type Stubs } from "@/checkout/stubs";
-import { createRateLimiter, type RateLimiter } from "@/lib/rate-limit";
-import { uuidv7 } from "@/lib/uuid";
+import { v7 as uuidv7 } from "uuid";
 
 /**
  * THE ONE RUNNING COPY OF THE APP'S STATE
@@ -24,7 +23,6 @@ import { uuidv7 } from "@/lib/uuid";
 const g = globalThis as unknown as {
   __checkout?: Checkout;
   __stubs?: Stubs;
-  __limiter?: RateLimiter;
   __instanceId?: string;
 };
 
@@ -64,23 +62,11 @@ if (cluster.isWorker) {
 }
 
 /** Identifies this process. If two requests report different values, the note above applies. */
-export const instanceId: string = (g.__instanceId ??= uuidv7(Date.now()));
+export const instanceId: string = (g.__instanceId ??= uuidv7());
 
 export const stubs: Stubs = (g.__stubs ??= makeStubs());
 export const checkout: Checkout = (g.__checkout ??= createCheckout(stubs));
 
-/**
- * How fast one caller may create holds.
- *
- * Twenty a minute is far above any real fan and far below what bulk inventory denial needs.
- * It reads the same injected clock as everything else, so the demo's `advance` knob moves the
- * window too — which is the only way to demonstrate the reset without waiting a minute.
- */
-export const holdLimiter: RateLimiter = (g.__limiter ??= createRateLimiter({
-  limit: 20,
-  windowMs: 60_000,
-  now: () => stubs.clock.now(),
-}));
 
 /**
  * Wipe everything back to a fresh start. Used by POST /api/debug/reset and at the top of
@@ -94,5 +80,4 @@ export const holdLimiter: RateLimiter = (g.__limiter ??= createRateLimiter({
 export function resetAll() {
   stubs.reset();
   checkout._reset();
-  holdLimiter.reset();
 }

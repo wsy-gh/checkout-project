@@ -132,7 +132,10 @@ export function createCheckout(deps: Deps) {
    * them, a crash in the middle would leave seats that no session is holding and no fan can
    * buy — the exact failure described in decision 1 of docs/decisions.md.
    */
-  function release(s: Session, to: { status: "EXPIRED" } | { status: "FAILED"; failReason: FailReason }): Session {
+  function release(
+    s: Session,
+    to: { status: "EXPIRED" } | { status: "FAILED"; failReason: FailReason; unresolvedIntentId?: string },
+  ): Session {
     deps.inventory.release(s.listingId, s.quantity);
     const next = put({ ...strip(s), ...to });
     deps.events.emit(to.status === "EXPIRED" ? "hold_expired" : "session_failed", {
@@ -158,13 +161,16 @@ export function createCheckout(deps: Deps) {
    */
   function strip(s: Session) {
     const rest = { ...s } as Partial<Session> &
-      Partial<Record<"paymentIntentId" | "pendingSince" | "orderId" | "failReason" | "successorSessionId", unknown>>;
+      Partial<
+        Record<"paymentIntentId" | "pendingSince" | "orderId" | "failReason" | "successorSessionId" | "unresolvedIntentId", unknown>
+      >;
     delete rest.status;
     delete rest.paymentIntentId;
     delete rest.pendingSince;
     delete rest.orderId;
     delete rest.failReason;
     delete rest.successorSessionId;
+    delete rest.unresolvedIntentId;
     return rest as Omit<Session, "status">;
   }
 
@@ -197,11 +203,9 @@ export function createCheckout(deps: Deps) {
       // Except in one case. If we just learned the charge SUCCEEDED but the session has
       // already been written off as failed (the "we waited too long" timeout below can do
       // that while a slow charge is still in flight), then the fan's card was charged for
-      // seats that went back on sale. Nobody is going to notice that on their own, so we log
-      // it loudly. A production system has a job that reconciles against the provider and
-      // issues the refund; here the event log is standing in for that job.
-      if (outcome === "ok" && s.status !== "COMPLETED")
-        deps.events.emit("reconcile_conflict", { sessionId: id, status: s.status, outcome });
+      // seats that went back on sale. A refund is owed, and reconcileChargedButFailed issues
+      // it. It only fires while the intent is still marked unresolved, so it cannot pay twice.
+      if (outcome === "ok" && s.status === "FAILED" && s.unresolvedIntentId) return reconcileChargedButFailed(s);
       return s;
     }
     if (outcome === "ok") {
@@ -211,7 +215,40 @@ export function createCheckout(deps: Deps) {
     }
     if (outcome === "declined") return release(s, { status: "FAILED", failReason: "DECLINED" });
     if (deps.clock.now() - s.pendingSince > deps.policy.pendingTimeoutMs)
-      return release(s, { status: "FAILED", failReason: "PENDING_TIMEOUT" });
+      // Time is up, but the outcome is still "unknown" — the charge may yet have landed. Keep
+      // its reference on the failed session so a later read can ask again. See settleFailed.
+      return release(s, { status: "FAILED", failReason: "PENDING_TIMEOUT", unresolvedIntentId: s.paymentIntentId });
+    return s;
+  }
+
+  /**
+   * A charge we had written off actually went through. Give the money back.
+   *
+   * Reached two ways, both meaning the same thing: settle sees a late "ok" for a session the
+   * timeout already failed, or a later read of that failed session asks the provider and hears
+   * "ok". Either way the fan paid for seats that are back on sale. We refund, record the
+   * conflict for anyone watching, and clear the reference so no subsequent read refunds again.
+   */
+  function reconcileChargedButFailed(s: SessionOf<"FAILED">): Session {
+    deps.payments.refund(s.unresolvedIntentId!);
+    deps.events.emit("reconcile_conflict", { sessionId: s.id, intentId: s.unresolvedIntentId, status: s.status });
+    deps.events.emit("refund_issued", { sessionId: s.id, intentId: s.unresolvedIntentId });
+    return put({ ...s, unresolvedIntentId: undefined });
+  }
+
+  /**
+   * Resolve a failed session that is still carrying an uncertain payment reference.
+   *
+   * The mirror image of `settle`. It takes an id and re-reads, because every caller reached it
+   * by awaiting the provider, so the session it was holding is a snapshot. If the provider now
+   * says the charge landed, the fan is refunded; if it says declined, no money moved and we can
+   * forget the reference; if it still cannot say, we keep the reference and try again next read.
+   */
+  function settleFailed(id: string, outcome: PaymentOutcome): Session {
+    const s = db.get(id) ?? fail("NOT_FOUND");
+    if (s.status !== "FAILED" || !s.unresolvedIntentId) return s;
+    if (outcome === "ok") return reconcileChargedButFailed(s);
+    if (outcome === "declined") return put({ ...s, unresolvedIntentId: undefined });
     return s;
   }
 
@@ -221,7 +258,7 @@ export function createCheckout(deps: Deps) {
    * Only produces anything when the session failed specifically because the seller pulled the
    * listing. "Your tickets are gone" with no next step is a dead end, so the error response
    * and the failure screen both carry a few things the fan can actually buy instead. Rendered
-   * by src/app/_components/RecoveryState.tsx and fetched for pages by src/lib/page-data.ts.
+   * by src/app/_components/RecoveryState.tsx and fetched for pages by src/lib/load-checkout-page.ts.
    */
   const alternativesFor = (s: Session) =>
     s.status === "FAILED" && s.failReason === "INVENTORY_WITHDRAWN"
@@ -247,11 +284,24 @@ export function createCheckout(deps: Deps) {
    * fan trying to buy. Called at the top of `create` below, and by the two pages that display
    * seat counts (src/app/page.tsx and src/app/listing/[id]/page.tsx).
    */
-  function sweepExpired(listingId?: string): void {
+  async function sweepExpired(listingId?: string): Promise<void> {
     const now = deps.clock.now();
-    for (const s of [...db.values()])
-      if (s.status === "ACTIVE" && now >= s.holdExpiresAt && (listingId === undefined || s.listingId === listingId))
+    for (const s of [...db.values()]) {
+      if (listingId !== undefined && s.listingId !== listingId) continue;
+      if (s.status === "ACTIVE" && now >= s.holdExpiresAt) {
         release(s, { status: "EXPIRED" });
+      } else if (s.status === "PAYMENT_PENDING" && now - s.pendingSince > deps.policy.pendingTimeoutMs) {
+        // A payment nobody is waiting on any more. Ask the provider and settle it, so its seats
+        // are not held on a charge the buyer walked away from. This is the fix for a pending
+        // session that would otherwise sit holding inventory until someone happened to read it —
+        // and nobody reads the session of a fan who closed the tab. settle re-reads after the await.
+        settle(s.id, await deps.payments.status(s.paymentIntentId));
+      } else if (s.status === "FAILED" && s.unresolvedIntentId) {
+        // A written-off payment whose fate we never confirmed. Check once more, so a charge
+        // that landed after we gave up is refunded even if the buyer never returns.
+        settleFailed(s.id, await deps.payments.status(s.unresolvedIntentId));
+      }
+    }
   }
 
   // ---------- operations ----------
@@ -262,7 +312,7 @@ export function createCheckout(deps: Deps) {
    * Reached from the "Buy" form on src/app/listing/[id]/page.tsx (via the Server Action in
    * src/app/actions.ts) and from POST /api/sessions.
    */
-  function create(input: CreateInput): Session {
+  async function create(input: CreateInput): Promise<Session> {
     // Checked here rather than in the route, because there are two front doors into this
     // function — the HTTP API and the Server Action — and a rule enforced in one doorway is
     // a rule that is not really enforced. `Number("abc")` is NaN, and NaN slips through
@@ -273,7 +323,7 @@ export function createCheckout(deps: Deps) {
     const now = deps.clock.now();
     // Give back any seats whose holds have quietly run out, so we are counting what is
     // really available rather than what was available before some other fan wandered off.
-    sweepExpired(input.listingId);
+    await sweepExpired(input.listingId);
 
     // Has the seller pulled this listing entirely?
     if (!deps.inventory.backs(input.listingId)) fail("INVENTORY_WITHDRAWN");
@@ -321,7 +371,7 @@ export function createCheckout(deps: Deps) {
    * Look up a session and bring it up to date before handing it back.
    *
    * This is the function behind "resume". Both surfaces call it through
-   * src/lib/page-data.ts, and GET /api/sessions/:id calls it directly. There is no separate
+   * src/lib/load-checkout-page.ts, and GET /api/sessions/:id calls it directly. There is no separate
    * "resume" concept anywhere in this codebase — resuming is just reading.
    *
    * Reading is also when a session catches up with reality, because three things can go
@@ -349,6 +399,10 @@ export function createCheckout(deps: Deps) {
     // The `await` below is the only pause in this function. Everything `s` holds is stale
     // from here on, which is exactly why `settle` re-reads instead of trusting what we pass.
     else if (s.status === "PAYMENT_PENDING") s = settle(s.id, await deps.payments.status(s.paymentIntentId));
+    // A payment we gave up on may have landed since. Ask again, so a late success is refunded
+    // rather than lost. Only fires while the reference is still unresolved, so it is a no-op
+    // once reconciled. This is the read-path half of the same reconciliation the sweep does.
+    else if (s.status === "FAILED" && s.unresolvedIntentId) s = settleFailed(s.id, await deps.payments.status(s.unresolvedIntentId));
 
     if (seenOn && seenOn !== s.lastSeenOn) {
       deps.events.emit("session_resumed", { sessionId: s.id, surface: seenOn, fromSurface: s.lastSeenOn, ageMs: now - s.createdAt });
@@ -473,7 +527,7 @@ export function createCheckout(deps: Deps) {
    *   one attempt that happens to have arrived twice, and the right answer is to pretend the
    *   second one never happened and hand back the result of the first. The idempotency key
    *   does this: the browser generates one value per rendered form (see
-   *   src/lib/page-data.ts, which mints it, and src/app/_components/PayForm.tsx, which
+   *   src/lib/load-checkout-page.ts, which mints it, and src/app/_components/PayForm.tsx, which
    *   carries it in a hidden input), so both copies of the same attempt share a key.
    *
    * The status check cannot handle the second case — a retry would be told it is competing
@@ -506,7 +560,10 @@ export function createCheckout(deps: Deps) {
     // the same instant the session flips to PAYMENT_PENDING, this also catches the case
     // where the first copy of the attempt is still in flight — that gets "we're confirming
     // your payment", which is true and calm, rather than a confusing error.
-    const replayed = s.idempotency[input.idempotencyKey];
+    // `Object.hasOwn`, not a bare lookup: the idempotency map is a plain object, so a key like
+    // "constructor" or "toString" would otherwise match an inherited property and a first-ever
+    // attempt with that key would be turned away as a replay of something that never happened.
+    const replayed = Object.hasOwn(s.idempotency, input.idempotencyKey) ? s.idempotency[input.idempotencyKey] : undefined;
     if (replayed !== undefined) {
       // Give the same answer as last time, including the same failure. Returning a cheerful
       // 200 for a retry of something that was declined would read as success.
@@ -615,11 +672,11 @@ export function createCheckout(deps: Deps) {
    * Calling it twice returns the same new session rather than holding a second set of seats,
    * which matters because "Try again" is a button a frustrated person presses repeatedly.
    */
-  function rehold(id: string): Session {
+  async function rehold(id: string): Promise<Session> {
     const old = db.get(id) ?? fail("NOT_FOUND");
     if (old.status !== "EXPIRED") return fail(statusError(old), old, alternativesFor(old));
     if (old.successorSessionId) return db.get(old.successorSessionId)!;
-    const next = create({ listingId: old.listingId, quantity: old.quantity, surface: old.lastSeenOn });
+    const next = await create({ listingId: old.listingId, quantity: old.quantity, surface: old.lastSeenOn });
     put({ ...old, successorSessionId: next.id });
     return next;
   }
