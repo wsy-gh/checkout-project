@@ -1,4 +1,4 @@
-/* Deliberately tiny. The checkout route ships no UI library so the bundle stays small. */
+/* Deliberately tiny: the checkout route ships no UI library. */
 :root {
   --ink: #1a1a1a;
   --muted: #666;
@@ -36,12 +36,15 @@ p { margin: 0 0 10px; }
 .strike { text-decoration: line-through; color: var(--muted); }
 .countdown { font-variant-numeric: tabular-nums; font-size: 28px; font-weight: 600; margin: 12px 0; }
 .countdown.urgent { color: #b30000; }
-/* Inside a banner the timer is supporting information, not the headline. */
+/* In a banner the timer is supporting information, not the headline. */
 .countdown.compact { font-size: 20px; margin: 6px 0 2px; }
 .countdown-label { font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 8px; }
 .countdown.compact .countdown-label { font-size: 13px; }
+/* Room below the hold-expired Refresh button so it isn't flush against the Pay form under it —
+   most visible in the phone frame, where the button is full-width. */
+.countdown-refresh { display: block; margin: 8px 0 16px; }
 
-/* A live event clock: neutral until kickoff, then counting up in red. */
+/* Event clock: neutral until kickoff, then counting up in red. */
 .event-time { font-variant-numeric: tabular-nums; }
 .event-time.started { color: #b30000; font-weight: 600; }
 .listing-row { padding: 12px 0; border-top: 1px solid var(--line); }
@@ -64,17 +67,9 @@ button, .button {
 button.secondary, .button.secondary { background: #fff; color: var(--ink); }
 button:disabled { opacity: 0.5; cursor: default; }
 
-/*
- * A visible focus ring for keyboard users.
- *
- * Browsers draw one by default, but the buttons here are near-black, so the default ring
- * has almost nothing to contrast against and effectively disappears. An offset ring sits
- * outside the element, so it stays visible whatever the element is filled with.
- *
- * `:focus-visible` rather than `:focus`, so the ring appears for keyboard and assistive
- * navigation but not on mouse clicks — which is the reason people used to remove focus
- * styles altogether and break keyboard access in the process.
- */
+/* The buttons here are near-black, so the browser's default focus ring has nothing to contrast
+   against; an offset ring stays visible whatever it surrounds. `:focus-visible` rather than
+   `:focus` so it appears for keyboard navigation but not mouse clicks. */
 :focus-visible {
   outline: 3px solid #0b57d0;
   outline-offset: 2px;
@@ -82,13 +77,17 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 form.inline { display: inline; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-/* The quantity field sits on its own line above the buttons: choosing how many is a
-   different kind of decision from committing to buy, and they should not read as a row. */
+/* Quantity on its own line above the buttons: choosing how many is a different kind of decision
+   from committing to buy, and the two should not read as one row. */
 form label { display: inline-block; margin-bottom: 4px; }
 form select { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line); }
+/* Releasing a hold sits below Pay, separated by a rule and paired with its explanation, so it reads
+   as the deliberate, quieter action rather than a second button of equal weight. */
+.release { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; }
+.release .muted { font-size: 13px; flex: 1 1 14em; }
 .meta { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); margin-top: 16px; }
 
-/* Session inspector: a dev-only panel, visually subordinate to the real checkout UI. */
+/* Session inspector: dev-only, visually subordinate to the real checkout UI. */
 .inspector {
   margin-top: 26px; padding: 14px 16px;
   border: 1px dashed var(--line); border-radius: 8px; background: #fafafa;
@@ -119,7 +118,7 @@ form select { font: inherit; padding: 8px; border-radius: 6px; border: 1px solid
 .surface-tag { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
 .alts { margin: 10px 0 0; padding-left: 18px; font-size: 15px; }
 .alts li { margin-bottom: 4px; }
-/* Announcements for screen readers only: the visible countdown ticks silently. */
+/* Screen-reader announcements only; the visible countdown ticks silently. */
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;

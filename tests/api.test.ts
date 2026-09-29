@@ -6,31 +6,21 @@ import { GET as getRoute } from "@/app/api/sessions/[id]/route";
 import { POST as completeRoute } from "@/app/api/sessions/[id]/complete/route";
 import { POST as acceptPriceRoute } from "@/app/api/sessions/[id]/accept-price/route";
 import { POST as reholdRoute } from "@/app/api/sessions/[id]/rehold/route";
+import { POST as cancelRoute } from "@/app/api/sessions/[id]/cancel/route";
 import { GET as debugGet, POST as debugPost } from "@/app/api/debug/[knob]/route";
 
 /**
- * THE HTTP BOUNDARY
+ * The HTTP boundary — the translation between a request and a domain call, which is where a correct
+ * state machine still gets handed to clients wrongly. Three things exist only at this layer:
  *
- * Since the domain tests (scenarios.test.ts, concurrency.test.ts) call the rules directly and so
- * cannot see the translation between an HTTP request and a domain call, this file tests that
- * translation — which is exactly where a correct state machine still gets handed to clients wrongly.
+ *   The status code, because most clients check `res.ok` before reading the body, so a 200 carrying
+ *   a failed session reads to them as success.
+ *   The envelope: every response carries the full session, which is what lets a surface redraw from
+ *   a rejection without a second request. Asserted on every response below rather than once.
+ *   `no-store`, since a cached checkout reply is a lie the moment anything happens.
  *
- * Three things exist only at this layer, and all three are load-bearing claims in the README:
- *
- *   THE STATUS CODE. Since most clients — and every `fetch` wrapper — check `res.ok` before reading
- *   the body, a 200 carrying a failed session reads to them as a success, so the status-code table
- *   has to be pinned; these tests do that.
- *
- *   THE ENVELOPE. "Every response carries the full session, whether the request succeeded or not" is
- *   what lets a surface redraw from any rejection without a second request, so it is asserted against
- *   every response these tests produce rather than claimed in prose.
- *
- *   `no-store`, because a cached checkout page or API reply is a lie the moment anything happens.
- *
- * The route handlers are called as plain functions, the way Next.js calls them — no server, no port,
- * no fetch — so these run in the same few milliseconds as the rest of the suite. The one thing that
- * costs is state: they share the process-wide singleton from src/lib/checkout.ts (the real one the
- * app uses, not a fixture), so `resetAll` runs before each test.
+ * Route handlers are called as plain functions, the way Next.js calls them — no server, no port — so
+ * these run in milliseconds. They share the real process-wide singleton, so `resetAll` runs first.
  */
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -55,16 +45,12 @@ type Envelope = {
   alternatives?: { id: string }[];
 };
 
-/**
- * Read a response, and assert the two things that must be true of *every* reply from the
- * session API before returning it. Putting them here rather than in one test means no route
- * can quietly stop honouring them: every call in this file checks them by construction.
- */
+// Asserts the two things true of every reply before returning it, so no route can quietly stop
+// honouring them: every call in this file checks them by construction.
 async function read(res: Response) {
   const body = (await res.json()) as Envelope;
   expect(res.headers.get("cache-control")).toBe("no-store");
-  // A rejection without a code, or any reply without the session, would force a client into a
-  // second request to find out where it stands.
+  // Either omission would force a client into a second request to learn where it stands.
   if (res.status >= 400) expect(body.code).toBeTruthy();
   expect(body.session).toBeTruthy();
   expect(typeof body.serverNow).toBe("number");
@@ -171,11 +157,8 @@ describe("the cross-surface flow, over HTTP", () => {
   });
 });
 
-/**
- * The status code is the part of the contract a client reads before anything else, so it gets
- * a table of its own. Every row is a rejection the UI has a screen for; if a code here moves,
- * a client that branches on `res.status` changes behaviour without any test failing elsewhere.
- */
+// The status code is read before anything else, so it gets a table of its own. Every row is a
+// rejection the UI has a screen for, and a code moving here changes client behaviour silently.
 describe("status codes", () => {
   it("404 for a session that does not exist", async () => {
     const res = await resume("cs_nope");
@@ -276,9 +259,8 @@ describe("status codes", () => {
   });
 
   it("409, not 200, when the charge lands on a session the timeout already failed", async () => {
-    // The reconcile conflict, seen from a client. The session is FAILED and a refund is owed;
-    // answering 200 with it would read as a completed purchase to anything that checks the
-    // status code first. See `answer` in src/checkout/service.ts.
+    // The reconcile conflict from a client's side: the session is FAILED and a refund is owed, so a
+    // 200 would read as a completed purchase to anything checking the status code first.
     const s = await start("L1");
     stubs.payments.delayMs = 20;
     const paying = pay(s, "slow");
@@ -295,10 +277,9 @@ describe("status codes", () => {
   });
 
   it("every shape of unusable body is a 400, never a 500", async () => {
-    // `null` is the one that used to crash. JSON.parse succeeds on it and it is not an
-    // object, so a try/catch around the parse lets it through and the first property access
-    // throws: "Cannot read properties of null (reading 'listingId')" — a 500 on a two-word
-    // request. The others are valid JSON that is still not a set of fields.
+    // `null` used to crash: JSON.parse succeeds on it and it is not an object, so a try/catch round
+    // the parse lets it through and the first property access throws. The rest are valid JSON that
+    // is still not a set of fields.
     for (const body of ["}{ not json", "", "null", "[]", '"just a string"', "42"]) {
       const res = await createRoute(post("/api/sessions", body));
       expect(res.status, `body: ${body}`).toBe(400);
@@ -307,8 +288,8 @@ describe("status codes", () => {
   });
 
   it("refuses a body too large to be legitimate", async () => {
-    // Every field this API takes is a short scalar, so there is no size at which a bigger
-    // body becomes useful. A 10MB one was previously read in full and answered 201.
+    // Every field is a short scalar, so no larger body is useful. A 10MB one was read in full
+    // and answered 201.
     const huge = JSON.stringify({ listingId: "L1", quantity: 1, pad: "A".repeat(200_000) });
     const res = await createRoute(post("/api/sessions", huge));
     expect(res.status).toBe(400);
@@ -317,12 +298,8 @@ describe("status codes", () => {
   });
 });
 
-/**
- * Values arriving from outside are recognised, never coerced.
- *
- * `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so coercion turns requests that were
- * never valid into successful ones. Each of these was accepted before src/lib/input.ts.
- */
+// Recognise, never coerce: `String(["L1"])` is `"L1"` and `Number(true)` is `1`, so coercion turns
+// requests that were never valid into successful ones. Each of these was accepted before input.ts.
 describe("browser identity dedups holds across sessions", () => {
   // A create carrying a `cid` cookie, the way a browser would after the Server Action set it.
   const createWithCid = (cid: string, listingId = "L1", quantity = 1) =>
@@ -351,6 +328,36 @@ describe("browser identity dedups holds across sessions", () => {
   });
 });
 
+describe("releasing a hold over HTTP", () => {
+  it("answers 200 with the released session, then 409 on a repeat", async () => {
+    const held = await start("L1", 2);
+    expect(stubs.inventory.get("L1").available).toBe(2);
+
+    const released = await read(await cancelRoute(post(`/api/sessions/${held.id}/cancel`), ctx({ id: held.id })));
+    expect(released.status).toBe(200);
+    expect(released.session.status).toBe("EXPIRED");
+    expect(stubs.inventory.get("L1").available).toBe(4);
+
+    // The envelope carries the session either way, so a client that pressed twice can redraw from
+    // the refusal without asking again.
+    const again = await read(await cancelRoute(post(`/api/sessions/${held.id}/cancel`), ctx({ id: held.id })));
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe("EXPIRED");
+    expect(stubs.inventory.get("L1").available).toBe(4); // still four
+  });
+
+  it("refuses with 409 once a payment is in flight", async () => {
+    const held = await start("L1", 1);
+    stubs.payments.nextResult = "unknown";
+    await completeRoute(post(`/api/sessions/${held.id}/complete`, payBody(held)), ctx({ id: held.id }));
+
+    const res = await read(await cancelRoute(post(`/api/sessions/${held.id}/cancel`), ctx({ id: held.id })));
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("IN_PROGRESS_ELSEWHERE");
+    expect(stubs.inventory.get("L1").available).toBe(3);
+  });
+});
+
 describe("input is recognised, not coerced", () => {
   it("refuses values that merely look number-ish", async () => {
     for (const quantity of [true, false, [5], {}, "abc", null, Infinity]) {
@@ -372,8 +379,7 @@ describe("input is recognised, not coerced", () => {
   });
 
   it("never stores an unrecognised surface", async () => {
-    // This was a cast rather than a check, so `?surface=<script>x</script>` was written into
-    // the session and echoed in the event log. Anything unrecognised is now simply absent.
+    // Was a cast, so `?surface=<script>x</script>` was written into the session and the event log.
     const s = await start("L1", 1, "web");
     for (const bad of ["EVIL", "<script>x</script>", "web ", "MOBILE", "x".repeat(500)]) {
       const resumed = await read(await resume(s.id, bad));
@@ -395,17 +401,14 @@ describe("input is recognised, not coerced", () => {
       );
       expect(res.status, `key: ${JSON.stringify(idempotencyKey)}`).toBe(400);
     }
-    // The bug this closes: String({}) is "[object Object]", so every caller sending a
-    // non-string key shared one key — and the second genuinely different attempt was handed
-    // the first one's order as a replay.
+    // `String({})` is "[object Object]", so every caller sending a non-string key shared one key,
+    // and the second genuinely different attempt was handed the first one's order.
     expect((await read(await resume(s.id))).session.status).toBe("ACTIVE");
   });
 
   it("an idempotency key that names an inherited property is not mistaken for a replay", async () => {
-    // Reviewer P2-5. The idempotency map is a plain object, so "constructor" (and "toString",
-    // "hasOwnProperty", …) match an inherited property. Before the fix, a first-ever attempt
-    // with such a key was turned away as IN_PROGRESS_ELSEWHERE against a session that was still
-    // active. It must complete normally.
+    // The idempotency map is a plain object, so "constructor" and friends match an inherited
+    // property: a first-ever attempt with such a key was turned away as a replay of nothing.
     for (const key of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
       const s = await start("L1");
       const paid = await read(await pay(s, key));
@@ -416,8 +419,8 @@ describe("input is recognised, not coerced", () => {
   });
 
   it("requires a payment token rather than inventing one", async () => {
-    // The stub ignores the token, so a missing one silently "worked" — and that same path
-    // would attempt a charge against a placeholder the day a real provider is wired in.
+    // The stub ignores the token, so a missing one silently "worked" — and the same path would
+    // charge against a placeholder once a real provider is wired in.
     const s = await start();
     const res = await completeRoute(
       post(`/api/sessions/${s.id}/complete`, { version: s.version, priceVersion: s.priceVersion, idempotencyKey: "k" }),
@@ -428,8 +431,8 @@ describe("input is recognised, not coerced", () => {
   });
 
   it("does not forward unknown fields from the body into the domain", async () => {
-    // accept-price used to spread `{ ...body }` into its input — mass assignment, harmless
-    // only while the domain happened to ignore the extras.
+    // accept-price used to spread `{ ...body }` into its input: mass assignment, safe only while
+    // the domain happened to ignore the extras.
     const s = await start("L1");
     stubs.pricing.setTotal("L1", 9900);
     const res = await acceptPriceRoute(
@@ -473,8 +476,7 @@ describe("the debug knobs", () => {
   });
 
   it("do not exist in a production build", async () => {
-    // An unauthenticated route that resets every session must not merely be undocumented in
-    // production. One POST to /reset would end every fan's checkout at once.
+    // One POST to /reset would end every fan's checkout, so being undocumented is not enough.
     vi.stubEnv("NODE_ENV", "production");
     try {
       expect((await debugGet(get("/api/debug/events"), ctx({ knob: "events" }))).status).toBe(404);

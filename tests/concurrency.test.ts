@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { MIN, completeBody, fresh, rejects } from "./helpers";
 
-// Two people (or one confused person with two devices) pressing Pay at the same time.
+// Two people — or one confused person with two devices — pressing Pay at the same time.
 //
-// Since the interference these tests are meant to catch can only happen when the two calls genuinely
-// overlap in time, the fake payment provider pauses partway through, which hands control back to
-// JavaScript and lets the second call run while the first is still waiting. That overlap is the whole
-// point: a test that simply ran one call to completion and then the other would pass even against
-// completely broken code, because the race would never occur. So if anyone ever adds an `await`
-// between the checks and the status change in `complete`, these are the tests that notice.
+// The interference these catch can only happen when the calls genuinely overlap, so the fake provider
+// pauses partway through, handing control back and letting the second call run while the first waits.
+// That overlap is the point: running one to completion and then the other would pass against
+// completely broken code. These are the tests that notice if an `await` ever appears between the
+// checks and the status change in `complete`.
 
 describe("two devices complete at once", () => {
   it("exactly one order; the loser sees IN_PROGRESS_ELSEWHERE or the completed state", async () => {
@@ -50,9 +49,9 @@ describe("two devices complete at once", () => {
     stubs.payments.delayMs = 5;
     const s = await checkout.create({ listingId: "L1", quantity: 1, surface: "web" });
 
-    // One rendered form submitted twice — a double-click with no JS to disable the button. Since both
-    // copies carry the same key, this is the *same attempt*, and the fan must never be told that
-    // another device is paying.
+    // One rendered form submitted twice — a double-click with no JS to disable the button. Both
+    // copies carry the same key, so this is one attempt, and the fan must not be told another device
+    // is paying.
     const [a, b] = await Promise.all([
       checkout.complete(s.id, completeBody(s, "one-form")),
       checkout.complete(s.id, completeBody(s, "one-form")),
@@ -64,11 +63,10 @@ describe("two devices complete at once", () => {
   });
 });
 
-// The reconcile path is the other side of the same coin. Since `get` awaits the provider before
-// writing, it needs the same re-read-after-await guard that `complete` has — and two surfaces
-// refreshing a pending session at once is an ordinary thing to do, because the UI literally tells the
-// fan to refresh. Before the guard, each of those reads settled the session independently, which is
-// the bug these tests pin down.
+// The reconcile path is the other side of the same coin: `get` awaits the provider before writing, so
+// it needs the same re-read-after-await guard `complete` has. Two surfaces refreshing a pending
+// session at once is ordinary — the UI tells the fan to refresh — and before the guard each of those
+// reads settled the session independently.
 
 describe("two surfaces reconcile a pending session at once", () => {
   it("releases the hold exactly once when the provider reports declined", async () => {
@@ -116,12 +114,10 @@ describe("two surfaces reconcile a pending session at once", () => {
     expect(read.status === "FAILED" && read.failReason).toBe("PENDING_TIMEOUT");
     expect(stubs.inventory.get("L1").available).toBe(4);
 
-    // ...and only then does the charge come back successful. Since the seat is already gone, the
-    // session must NOT resurrect into COMPLETED over released inventory: it stays failed, the fan is
-    // told a refund is coming, and the conflict is logged for the reconciliation job a real system
-    // would run against the provider. The attempt is rejected rather than resolved because a 200
-    // carrying a FAILED session would read as success to any client that checks the status code
-    // first; the session travels with the rejection, so the screen is the same either way.
+    // ...and only then does the charge come back successful. The seat is already gone, so the session
+    // must not resurrect into COMPLETED over released inventory: it stays failed, a refund is owed,
+    // and the conflict is logged. Rejected rather than resolved because a 200 carrying a FAILED
+    // session would read as success; the session travels with the rejection either way.
     const err = await rejects(paying);
     expect(err.code).toBe("ALREADY_FAILED");
     expect(err.session?.status).toBe("FAILED");

@@ -3,53 +3,33 @@
 import { useEffect, useState } from "react";
 
 /**
- * HOW MANY MILLISECONDS HAVE PASSED SINCE THIS COMPONENT'S SERVER-TIME ANCHOR
+ * Milliseconds elapsed since a server-time anchor, ticking once a second. Shared by the hold
+ * countdown and the event clock. The server sends the numbers that matter and the caller
+ * subtracts them, so the first render is already correct; this only adds the passage of time.
  *
- * Since both timers in the app — the hold countdown in Countdown.tsx and the "starts in 25 min"
- * clock in EventTime.tsx — need to advance once a second while staying correct, they need a
- * single hook that supplies the ticking, and this is it. The division of labour is deliberate:
- * the server sends the two numbers that matter and the caller subtracts them, so the first
- * render is correct on its own; this hook only adds the passage of time on top.
+ * `anchor` is the caller's `serverNow`, passed in so a change can be detected and the count reset.
+ * A checkout page can re-fetch itself in place (SessionSync does, on a Back navigation), handing
+ * the caller a fresh `serverNow` mid-life. Without the reset, the hook would keep counting from
+ * the original mount while the caller subtracted that elapsed time from the *new* anchor —
+ * counting the same gap twice and jumping the timer forward by however long the page had been open.
  *
- * THE ANCHOR ARGUMENT
+ * It measures elapsed time with `performance.now()` rather than reading the wall clock each tick,
+ * because wall-clock time moves for reasons unrelated to time passing — most sharply when a phone
+ * reconnects and the OS re-syncs, which can jump it minutes — and a countdown doing arithmetic on
+ * it would jump too. `performance.now()` only moves forward at a steady rate and keeps counting
+ * while a tab is backgrounded, so a throttled interval reports true elapsed time rather than drift.
  *
- * `anchor` is the server clock reading the caller is counting from (its `serverNow`). Since a
- * checkout page can re-fetch itself in place — SessionSync does exactly that on a Back
- * navigation or a cross-tab nudge — the caller can be handed a fresh `serverNow` partway
- * through the component's life. When that happens the count must restart from zero, so `anchor`
- * is passed in for the sole reason of being able to detect the change and reset. If it did not,
- * the hook would keep counting elapsed time from the *original* mount while the caller
- * subtracted that elapsed time from the *new* anchor, counting the same gap twice and making
- * the timer jump forward by however long the page had been open.
- *
- * WHY IT MEASURES ELAPSED TIME RATHER THAN READING THE CLOCK
- *
- * The obvious way to build a countdown is to read the current wall-clock time on every tick and
- * subtract. Since wall-clock time can move for reasons that have nothing to do with time
- * passing — most sharply when a phone reconnects and the OS re-syncs its clock, which can jump
- * it by seconds or minutes — a countdown doing arithmetic on it would jump with it. So this
- * measures elapsed time with `performance.now()` instead, for the following reasons: it only
- * ever moves forward at a steady rate, no clock correction or timezone change touches it, and
- * it keeps counting while a tab is backgrounded, so a throttled interval that skips ticks still
- * reports the true elapsed time on its next tick rather than drifting behind.
- *
- * WHY IT RETURNS 0 ON THE FIRST RENDER
- *
- * Since the server has no `performance.now()` and never runs the effect below, it renders the
- * untouched starting value; the browser's first render has to match that exactly or React
- * reports a hydration mismatch. Returning 0 initially is what guarantees the match — the
- * browser's first render agrees with the server's, and only then does the ticking begin.
+ * It returns 0 on the first render because the server has no `performance.now()` and never runs
+ * the effect, so the browser's first render must match that exactly or React reports a hydration
+ * mismatch.
  */
 export function useElapsed(anchor: number, intervalMs = 1000): number {
   const [elapsed, setElapsed] = useState(0);
   const [seenAnchor, setSeenAnchor] = useState(anchor);
 
-  // Since a new anchor means the caller's numbers were just refreshed, the count has to restart
-  // from zero, and it is done here during render rather than in the effect below for a specific
-  // reason: this is React's recommended way to reset state when a prop changes. React discards
-  // this render and immediately re-runs with the reset value, so the stale elapsed time is never
-  // shown and there is no double commit — which is also why calling `setElapsed` inside the
-  // effect would be the wrong place for it.
+  // Reset during render rather than in the effect: this is React's prescribed way to reset state
+  // when a prop changes. React discards this render and re-runs with the reset value, so the stale
+  // elapsed time is never shown and there is no double commit.
   if (anchor !== seenAnchor) {
     setSeenAnchor(anchor);
     setElapsed(0);

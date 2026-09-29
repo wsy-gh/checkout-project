@@ -8,28 +8,21 @@ import { asSurface } from "@/lib/input";
 import { checkoutPath } from "@/lib/routes";
 
 /**
- * HOW THE WEB PAGES TALK TO THE BACKEND
+ * Server Actions: handed straight to a form's `action`, so the browser submits the form the ordinary
+ * way and the forms work from the moment the HTML arrives, before React has loaded.
  *
- * These are Server Actions: functions that live on the server but can be handed directly to a
- * form's `action`, so the browser submits that form the ordinary way and Next.js routes it here.
- * Since ordinary form submission is something browsers have always done without help, this matters
- * for a specific reason: the forms on these pages work from the moment the HTML arrives, before
- * React has loaded and even if it never does.
- *
- * Each function here is a thin wrapper that reads the form fields and calls exactly the same
- * function in src/checkout/service.ts that the HTTP API in src/app/api/sessions/ calls — two front
- * doors, one set of rules, and nothing decided in this file. They all finish by redirecting rather
- * than returning data, so that the page is re-rendered from the session as it now stands, which
- * keeps what the fan sees tied to the server's state rather than to whatever the last request
- * happened to hand back.
+ * Each is a thin wrapper that reads the form fields and calls the same service function the HTTP API
+ * calls — two front doors, one set of rules, nothing decided here. They all finish by redirecting
+ * rather than returning data, so the page is rebuilt from the session as it now stands rather than
+ * from whatever the last request handed back.
  */
 
 export type ActionState = { code?: ErrorCode; ok?: boolean };
 
 export async function createSession(formData: FormData): Promise<void> {
   const surface = asSurface(formData.get("surface")) ?? "web";
-  // Identify the browser (minting the cookie on first use), so repeating Buy → Start → Back resumes
-  // this browser's existing hold instead of reserving new seats. See src/lib/client-id.ts.
+  // Identify the browser, minting the cookie on first use, so repeating Buy → Start → Back resumes
+  // this browser's hold instead of reserving new seats.
   const clientId = await getOrCreateClientId();
   let id: string;
   try {
@@ -74,9 +67,8 @@ export async function acceptPrice(formData: FormData): Promise<void> {
     });
   } catch (e) {
     if (!isCheckoutError(e)) throw e;
-    // Since the page re-renders from the truth after this and an accepted-price refusal often leaves
-    // the screen looking unchanged, the reason has to be carried along in `code`: redrawing a screen
-    // that looks the same and saying nothing is indistinguishable from a button that does not work.
+    // An accepted-price refusal often leaves the screen looking unchanged, so the reason has to
+    // travel in `code`: redrawing identically and saying nothing looks like a broken button.
     code = e.code;
   }
   redirect(pathFor(formData, { result: code ?? "ok" }));
@@ -87,21 +79,31 @@ export async function rehold(formData: FormData): Promise<void> {
   try {
     next = await checkout.rehold(String(formData.get("id")));
   } catch (e) {
-    // Since this only fails when someone else took the seats in the meantime, we re-render the
-    // expired session — which already knows how to say so — rather than ever showing an error page.
+    // This only fails when someone else took the seats, so re-render the expired session, which
+    // already knows how to say so, rather than showing an error page.
     if (isCheckoutError(e)) redirect(pathFor(formData, { result: e.code }));
     throw e;
   }
   redirect(checkoutPath(next.id, surfaceOf(formData)));
 }
 
-/**
- * AFTER A SERVER ACTION, RE-RENDER THE PAGE FROM THE SESSION'S TRUE STATE.
- *
- * Since the RSC tree must match the store whether the form was submitted with or without
- * JavaScript, a redirect back to the same URL is the simplest way to guarantee it: the page is
- * rebuilt from the session as it now stands.
- */
+export async function releaseHold(formData: FormData): Promise<void> {
+  let listingId: string;
+  try {
+    listingId = (await checkout.cancel(String(formData.get("id")))).listingId;
+  } catch (e) {
+    // Refused because the session already moved on — a charge started, or the hold lapsed on its own
+    // — so re-render the checkout page, whose status screen already explains each of those.
+    if (isCheckoutError(e)) redirect(pathFor(formData, { result: e.code }));
+    throw e;
+  }
+  // Back to the listing rather than the dead checkout: the seats are on sale again by the time this
+  // renders, so the quantity picker offers the full range and starting over is one click.
+  redirect(`/listing/${listingId}`);
+}
+
+// A redirect back to the same URL is the simplest way to guarantee the rendered tree matches the
+// store, whether or not the form was submitted with JavaScript.
 function refreshWith(state: ActionState, formData: FormData): never {
   redirect(pathFor(formData, { result: state.code ?? "ok" }));
 }

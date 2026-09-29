@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { duration, money } from "@/lib/format";
 
-// Since money is integer cents everywhere else, this file tests the one place it becomes a string.
+// Money is integer cents everywhere else; this is the one place it becomes a string.
 describe("money", () => {
   it("formats cents with a separator and exactly two decimals", () => {
     expect(money(0)).toBe("$0.00");
@@ -12,10 +12,9 @@ describe("money", () => {
   });
 
   it("is exact across the boundaries where the one division could go wrong", () => {
-    // Since `money` divides by 100 — the only division in the app — the risk is a cent that rounds
-    // the wrong way. Rather than brute-force two million values, this checks the cases that actually
-    // exercise the rounding: every cents-place 0..99 at a few magnitudes, plus a handful chosen to
-    // land near a binary rounding step.
+    // `money` divides by 100 — the only division in the app — so the risk is a cent rounding the
+    // wrong way. Rather than brute-forcing two million values, this covers what actually exercises
+    // the rounding: every cents-place 0..99 at a few magnitudes, plus values near a binary step.
     const check = (cents: number) => {
       const expected = `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
       expect(money(cents).replace(/[$,]/g, "")).toBe(expected);

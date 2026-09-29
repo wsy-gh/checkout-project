@@ -16,12 +16,9 @@ export function completeBody(s: Session, key = "k1", surface: "web" | "mobile" =
 }
 
 /**
- * Run an async op that is expected to be rejected, and return the CheckoutError it threw.
- *
- * Since the tests assert on the *code* of an expected rejection, this needs to run the op, catch its
- * error, confirm it is one of our CheckoutErrors, and hand it back — failing the test loudly if the
- * op unexpectedly succeeded, or if it threw something that is not a CheckoutError (which would be a
- * real bug rather than an expected "no").
+ * Runs an op expected to be rejected and returns the CheckoutError it threw, so tests can assert on
+ * the code. Fails loudly if the op succeeded, or threw something that is not a CheckoutError — which
+ * would be a real bug rather than an expected "no".
  */
 export async function rejects(p: Promise<unknown>): Promise<CheckoutError> {
   try {

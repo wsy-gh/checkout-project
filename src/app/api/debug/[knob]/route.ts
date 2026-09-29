@@ -3,31 +3,25 @@ import { checkout, instanceId, resetAll, stubs } from "@/lib/checkout";
 type Ctx = { params: Promise<{ knob: string }> };
 
 /**
- * KNOBS FOR MAKING THINGS GO WRONG ON PURPOSE
+ * Knobs that cause the hard cases on demand — a price moving, a seller delisting, a provider timing
+ * out, a hold lapsing — by reaching into the stubs, which is what makes scripts/demo.sh able to show
+ * the whole story in a minute.
  *
- * Since the hard cases in a checkout — a price moving while someone is away, a seller pulling a
- * listing, a provider timing out, a hold running out — are all things you cannot wait around for,
- * these routes reach into the stubs in src/checkout/stubs.ts and cause them on demand, which is what
- * makes the whole story demonstrable in scripts/demo.sh in about a minute rather than on trust.
+ * An unauthenticated route where one POST resets every session or moves the clock must not ship, so
+ * that is structural rather than a promise: `devOnly` returns 404 from both handlers in a production
+ * build, the same answer an unknown route gives, so there is nothing to discover. It reads the
+ * environment per call rather than at module load, so a test can set NODE_ENV=production and watch
+ * the door close.
  *
- * Since none of this would ever ship — an unauthenticated route where one POST resets every session
- * or moves the server's clock is not something to leave reachable and trust nobody to find — that is
- * made structural rather than a promise in a comment: `devOnly` below returns 404 from both handlers
- * in a production build, which is also what an unknown route would say, so there is nothing to
- * discover. It reads the environment on every call rather than once at module load, so a test can set
- * `NODE_ENV=production` and watch the door actually close. See tests/api.test.ts.
- *
- *
- *   GET  /api/debug/events                     the structured event log
- *   GET  /api/debug/state                      instance id + listings + all sessions
- *   POST /api/debug/advance   {ms}             move the server clock forward
+ *   GET  /api/debug/events                      the structured event log
+ *   GET  /api/debug/state                       instance id + listings + all sessions
+ *   POST /api/debug/advance   {ms}              move the server clock forward
  *   POST /api/debug/price     {listingId,total} change a listing's price (bumps priceVersion)
  *   POST /api/debug/withdraw  {listingId}       seller delists
  *   POST /api/debug/restore   {listingId}
  *   POST /api/debug/payment   {next: ok|declined|unknown|lost, delayMs?}
  *   POST /api/debug/reset
  */
-/** In a production build these routes do not exist. */
 const devOnly = () => (process.env.NODE_ENV === "production" ? json({ error: "not found" }, 404) : null);
 
 export async function GET(_req: Request, { params }: Ctx) {
@@ -37,12 +31,9 @@ export async function GET(_req: Request, { params }: Ctx) {
   if (knob === "events") return json(stubs.events.all());
   if (knob === "state")
     return json({
-      // Which process answered. Since every session lives in one process's memory, two requests
-      // that ever report different values here mean this deployment is running more than one
-      // instance and serving sessions from whichever one a request happened to reach.
-      // src/lib/checkout.ts already refuses to start as a cluster worker; reporting the id here
-      // catches the cases that check cannot see, such as a serverless platform running many
-      // isolated instances.
+      // Which process answered. Two requests reporting different values mean this deployment runs
+      // more than one instance, each with its own sessions — which the cluster-worker check in
+      // src/lib/checkout.ts cannot see on a serverless platform.
       instance: { id: instanceId, pid: process.pid },
       serverNow: stubs.clock.now(),
       listings: stubs.inventory.all(),

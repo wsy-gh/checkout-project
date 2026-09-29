@@ -3,17 +3,13 @@ import type { Session, Surface } from "@/checkout/types";
 import { checkoutPath } from "@/lib/routes";
 
 /**
- * LINKS FOR MOVING BETWEEN THE TWO SURFACES, AND FOR LEAVING CHECKOUT.
+ * The cross-surface links open a new tab, since the point is watching one session live in two places
+ * at once, which you cannot see if the second replaces the first.
  *
- * Since the whole point of this demo is watching one session be live in two places at once — which
- * you cannot see if the second surface replaces the first — the cross-surface links open a new tab.
- *
- * They are plain `<a>` tags rather than Next's `<Link>`, also on purpose. Since `<Link>` fetches
- * the next page in the background and swaps it in without a real navigation, using it here would
- * mean the two surfaces quietly sharing one browser-side cache; a plain anchor forces a genuine
- * request, so each surface resolves the session on its own, the way a phone opening a link actually
- * would. That choice has a second benefit: because leaving is a real navigation, the browser Back
- * that returns here is one too, which is exactly the case `pageshow` in SessionSync.tsx covers.
+ * Plain `<a>` rather than `<Link>`, which would swap the page in client-side and leave the two
+ * surfaces sharing one browser cache; a real request makes each surface resolve the session on its
+ * own, as a phone opening a link would. It also makes the Back that returns here a real navigation,
+ * which is the case `pageshow` in SessionSync covers.
  */
 export function SurfaceLinks({ session, surface }: { session: Session; surface: Surface }) {
   const other =
@@ -34,21 +30,16 @@ export function SurfaceLinks({ session, surface }: { session: Session; surface: 
       <a href={`/listing/${session.listingId}`}>← Back to listing</a>
       <Link href="/">All events</Link>
       {session.status === "ACTIVE" && (
-        // Since abandoning checkout does not release the seats — the hold runs out on its own —
-        // saying so is more honest than letting the fan assume "back" means "cancel".
-        <p className="muted">Leaving keeps your hold until the timer runs out.</p>
+        // Leaving does not release the seats; the hold runs out on its own. Saying so beats letting
+        // the fan assume "back" means "cancel".
+        <p className="muted">Leaving keeps your hold until the timer runs out — release it above to free the seats now.</p>
       )}
     </nav>
   );
 }
 
-/**
- * THE ARROW THAT MARKS A LINK AS OPENING ELSEWHERE.
- *
- * Since "north east arrow" read aloud is noise, the arrow is shown to sighted users but hidden from
- * screen readers, which get the sentence instead — the part that actually carries the warning,
- * because a new tab opening unannounced is disorienting when you cannot see it happen.
- */
+// "North east arrow" read aloud is noise, so the glyph is hidden from screen readers and the
+// sentence carries the warning instead — an unannounced new tab is disorienting when you cannot see it.
 function NewTab() {
   return (
     <>

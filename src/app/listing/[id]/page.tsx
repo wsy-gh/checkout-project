@@ -38,13 +38,9 @@ export default async function Listing({ params, searchParams }: Props) {
         {money(price.total)} <span className="muted" style={{ fontSize: 14, fontWeight: 400 }}>each, fees included</span>
       </p>
       {error && <p className="banner bad">{CREATE_FAILED[error] ?? error}</p>}
-      {/*
-        * Since a listing can be unbuyable in three ways — sales closed, withdrawn, or sold out — and
-        * the alternative would be a Buy button that only ever comes back as a rejection, each case
-        * gets its own explanation and its own way out here. The server refuses all three anyway (see
-        * `create` in src/checkout/service.ts), but a dead end the fan has to walk into first is not a
-        * good screen.
-        */}
+      {/* Three ways a listing can be unbuyable — sales closed, withdrawn, sold out — each with its
+          own explanation and way out. The server refuses all three anyway, but a Buy button that only
+          ever comes back as a rejection is a poor screen. */}
       {salesClosed && !l.withdrawn ? (
         <Unavailable title="Sales have closed for this event" body="Checkout closes shortly before kickoff, so there is time to get in." />
       ) : l.withdrawn ? (

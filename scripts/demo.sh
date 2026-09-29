@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Walks the checkout-continuity story over the HTTP API and prints the session after each step.
+# Walks the checkout-project story over the HTTP API and prints the session after each step.
 # Requires the dev server: `npm run dev` on $BASE.
 #
 # Dev specifically, not a production build. The script drives the story with the debug knobs —

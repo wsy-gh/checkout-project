@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Alternative, FailReason, PriceChange, Session, Surface } from "@/checkout/types";
-import { acceptPrice, rehold } from "@/app/actions";
+import { acceptPrice, rehold, releaseHold } from "@/app/actions";
 import { money } from "@/lib/format";
 import { Countdown } from "./Countdown";
 import { PayForm } from "./PayForm";
@@ -18,22 +18,15 @@ type Props = {
 };
 
 /**
- * DECIDES WHAT THE FAN ACTUALLY SEES, BASED ON ONE THING: THE SESSION'S STATUS.
+ * The screen is decided by the session's status alone — not by which button was pressed or what the
+ * last request returned — so a phone opening a link and a laptop refreshing after a failed payment
+ * reach the same screen. There is no "resumed" state to get into.
  *
- * Since resuming has to work identically no matter how the fan arrived, this decides the screen
- * from the status alone — not from which button they pressed, not from what the last request
- * returned. A phone opening a link for the first time and a laptop refreshing after a failed
- * payment run the same code and reach the same screen, because they are looking at the same
- * session; there is no "resumed" state to get into.
+ * Status cannot always explain what just *happened*, which is what `result` is for, and why the
+ * banner is drawn here rather than inside one branch (see `refusalToShow`).
  *
- * Status decides the screen but cannot always explain what just happened, which is what `result`
- * is for, and it is why the banner is drawn out here rather than inside one branch — see
- * `refusalToShow` below.
- *
- * WORDING. Since the two surfaces differ only in wording and the difference is small, it is kept
- * inline: `t(web, mobile)` below picks between them, giving the phone the shorter, more direct copy
- * because it has less room and its reader is usually mid-task. English only — a real product would
- * lift these into a translation layer, which the README notes as future work.
+ * Surface wording is inline via `t(web, mobile)`, the phone getting the shorter copy. English only;
+ * a real product would lift these into a translation layer.
  */
 export function RecoveryState(props: Props) {
   const { session, listingName, priceChange, result } = props;
@@ -48,14 +41,9 @@ export function RecoveryState(props: Props) {
   );
 }
 
-/**
- * REJECTIONS THE STATUS PANEL BELOW ALREADY SPELLS OUT IN FULL.
- *
- * Since a declined card already renders the "your payment didn't go through, your seats were
- * released" screen — which says everything a banner would and says it better — repeating it on top
- * would be noise, and noise on an error screen is how people learn to stop reading error screens.
- * So codes in this set are the ones `refusalToShow` suppresses.
- */
+// Codes the status panel already spells out in full, so a banner repeating them would be noise —
+// and noise on an error screen is how people learn to stop reading error screens.
+
 const PANEL_SAYS_IT: ReadonlySet<string> = new Set([
   "PAYMENT_DECLINED",
   "EXPIRED",
@@ -76,20 +64,17 @@ const REJECTED: Record<string, string | undefined> = {
 };
 
 /**
- * WHICH REFUSAL, IF ANY, THE FAN HAS TO BE TOLD ABOUT IN WORDS.
- *
- * Since pressing "Try again" on an expired hold whose seats another fan has taken leaves the
- * session still EXPIRED, the screen would redraw identically and the button would appear to do
- * nothing — worse than an error — so this function exists to surface a message in that case. It is
- * written as "say it unless the panel already does", because that same shape catches every
+ * Which refusal, if any, needs saying in words. Pressing "Try again" on an expired hold whose seats
+ * another fan has taken leaves the session still EXPIRED, so the screen would redraw identically
+ * and the button would appear to do nothing. "Say it unless the panel already does" catches every
  * rejection that would otherwise leave the screen looking unchanged.
  */
 function refusalToShow(result: string | undefined, s: Session, priceChange?: PriceChange): string | undefined {
   if (!result || result === "ok") return undefined;
   // The price panel already shows both numbers and the button to accept the new one.
   if (result === "PRICE_CHANGED" && priceChange) return undefined;
-  // Worth saying to someone trying to re-hold an expired session, but redundant once the withdrawal
-  // is the thing the panel itself is already about.
+  // Worth saying to someone re-holding an expired session, redundant once the panel is itself
+  // about the withdrawal.
   if (result === "INVENTORY_WITHDRAWN" && s.status === "FAILED") return undefined;
   if (PANEL_SAYS_IT.has(result)) return undefined;
   return result;
@@ -115,15 +100,10 @@ const FAILURE: Record<FailReason, { title: [string, string]; body: [string, stri
 };
 
 /**
- * THE PANEL FOR THE SESSION'S CURRENT STATUS, AND NOTHING ELSE.
- *
- * The switch has no `default` branch, deliberately. Since TypeScript can tell that `status` has
- * exactly five possible values, if someone adds a sixth and forgets this file the build fails
- * instead of a fan meeting a blank screen — a compile error standing in for a test nobody would
- * have thought to write.
+ * No `default` branch, deliberately: TypeScript knows `status` has exactly five values, so adding a
+ * sixth and forgetting this file fails the build rather than showing a fan a blank screen.
  */
 function StateBody({ session: s, surface, serverNow, priceChange, idempotencyKey, alternatives }: Props) {
-  // Pick the web or the mobile wording for one phrase; the phone gets the shorter one.
   const t = (web: string, mobile: string) => (surface === "mobile" ? mobile : web);
   const hidden = (
     <>
@@ -155,6 +135,20 @@ function StateBody({ session: s, surface, serverNow, priceChange, idempotencyKey
           ) : (
             <PayForm session={s} surface={surface} idempotencyKey={idempotencyKey} />
           )}
+
+          {/* Giving up the hold on purpose. Kept below Pay and visually quieter than it, because the
+              two are opposite intentions and a misclick here costs the fan their seats. Offered
+              alongside the price panel too: declining a rise is a reason to let the seats go. */}
+          <form action={releaseHold} className="release">
+            {hidden}
+            <button type="submit" className="secondary">{t("Release these seats", "Release seats")}</button>
+            <span className="muted">
+              {t(
+                "Frees them for other fans now, rather than when the timer runs out — start again from the listing to change the quantity.",
+                "Frees them now. Start again to change the quantity.",
+              )}
+            </span>
+          </form>
         </>
       );
 
@@ -220,8 +214,7 @@ function StateBody({ session: s, surface, serverNow, priceChange, idempotencyKey
             </ul>
           ) : null}
           <div className="actions">
-            {/* Since the withdrawn listing is exactly the dead end the fan just hit, never send them
-                back to it — offer the home page instead. */}
+            {/* Never send them back to the withdrawn listing — it is the dead end they just hit. */}
             {withdrawn ? (
               <Link className="button" href="/">{pick(failure.action)}</Link>
             ) : (
@@ -235,12 +228,8 @@ function StateBody({ session: s, surface, serverNow, priceChange, idempotencyKey
   }
 }
 
-/**
- * THE EVENT NAME, HOW MANY SEATS, AND THE TOTAL — shown above every status panel.
- *
- * Since it is the one thing every screen renders, it is the natural home for SessionSync, which
- * keeps the page from going stale (see SessionSync.tsx; it renders nothing visible).
- */
+// Shown above every status panel, which makes it the natural home for SessionSync (renders nothing).
+
 function Header({ s, name }: { s: Session; name: string }) {
   return (
     <div className="row">
@@ -254,12 +243,9 @@ function Header({ s, name }: { s: Session; name: string }) {
   );
 }
 
-/**
- * SHOWN WHEN THE SERVER TURNED DOWN SOMETHING THE FAN JUST DID AND THE PAGE RE-RENDERED FROM TRUTH.
- *
- * The fallback is deliberately ugly rather than absent, because an unworded code is a bug — a
- * missing entry in REJECTED above — and a visibly odd sentence on screen is how that bug gets found.
- */
+// The fallback is deliberately ugly rather than absent: an unworded code means a missing entry in
+// REJECTED above, and a visibly odd sentence on screen is how that bug gets found.
+
 function ResultBanner({ code }: { code: string }) {
   return (
     <p className="banner warn" role="status">

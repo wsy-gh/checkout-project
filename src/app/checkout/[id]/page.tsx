@@ -1,10 +1,14 @@
+import { redirect } from "next/navigation";
 import { RecoveryState } from "@/app/_components/RecoveryState";
 import { SessionMeta } from "@/app/_components/SessionMeta";
 import { SurfaceLinks } from "@/app/_components/SurfaceLinks";
+import { checkout } from "@/lib/checkout";
+import { readClientId } from "@/lib/client-id";
 import { asSurface } from "@/lib/input";
 import { loadCheckoutPage } from "@/lib/load-checkout-page";
+import { checkoutPath } from "@/lib/routes";
 
-// Since a checkout page is the live state of a hold, it must never be served from a cache.
+// The live state of a hold, so it must never be served from a cache.
 export const dynamic = "force-dynamic";
 
 type Props = {
@@ -13,27 +17,32 @@ type Props = {
 };
 
 /**
- * THE CHECKOUT PAGE — BOTH SURFACES
+ * The checkout page for both surfaces: one route, with `?surface=mobile` picking the phone
+ * presentation. Taking the surface from the URL is not a hole in "nothing on the device is
+ * authoritative" — authority is about seats, price and deadlines, all read from the session, while
+ * surface only chooses a stylesheet and a wording variant, falling back to web if unrecognised.
  *
- * Since the project's claim is one page and one loader for both surfaces, there is a single route
- * here and `?surface=mobile` picks the phone presentation. There used to be two routes,
- * `/checkout/:id` and `/m/checkout/:id`, which were two nearly identical files differing only in a
- * CSS wrapper and a wording flag; collapsing them makes that claim literal instead of merely true —
- * the surface decides only how the one page is dressed.
- *
- * The surface coming from the URL is not a hole in "nothing on the device is authoritative", because
- * authority is about seats, price and deadlines, all of which are read from the session. `surface`
- * only chooses a stylesheet and a wording variant, and an unrecognised value falls back to web rather
- * than erroring, so a mangled deep link degrades to the ordinary checkout page.
- *
- * This is a Server Component, so the session, price and a correct countdown are in the HTML before
- * any JavaScript runs; hydration only adds the countdown tick and the Pay button's pending state, and
- * nothing the fan needs is gated on it.
+ * A Server Component, so the session, price and a correct countdown are in the HTML before any
+ * JavaScript runs; hydration only adds the countdown tick and the Pay button's pending state.
  */
 export default async function Checkout({ params, searchParams }: Props) {
   const [{ id }, query] = await Promise.all([params, searchParams]);
   const surface = asSurface(query.surface) ?? "web";
   const data = await loadCheckoutPage(id, surface);
+
+  // A stale history link can point at a hold that has since expired, so if this browser has a live
+  // hold of its own, send them there rather than to the dead end. Same listing is preferred, the
+  // usual case being that they pressed "Try again" and this is the successor. Only EXPIRED
+  // redirects: COMPLETED and FAILED must keep showing their own screen, and ACTIVE is what they came
+  // for. `resumable` is scoped to their `cid`, so this can only ever reach their own hold.
+  if (data.session.status === "EXPIRED") {
+    const cid = await readClientId();
+    if (cid) {
+      const live = checkout.resumable(cid);
+      const target = live.find((s) => s.listingId === data.session.listingId) ?? live[0];
+      if (target) redirect(checkoutPath(target.id, surface));
+    }
+  }
 
   const screen = (
     <>
@@ -44,8 +53,7 @@ export default async function Checkout({ params, searchParams }: Props) {
     </>
   );
 
-  // The only thing the two surfaces disagree about, besides wording, is the frame: the phone gets
-  // one wrapped around it, the web surface does not.
+  // Besides wording, the frame is the only difference between the surfaces.
   return surface === "mobile" ? (
     <div className="phone-wrap">
       <main className="phone">{screen}</main>

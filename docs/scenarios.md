@@ -1,10 +1,10 @@
 # Scenarios and instrumentation
 
-Rows 1-34 run against the domain directly, which is where the rules live. Rows 35-54 run
-against the route handlers, called as plain functions the way Next.js calls them — that is the
-only layer where a status code or a response envelope exists to get wrong. Rows 17-24 are
-regression tests: each fails if you remove the fix it covers, which I verified by removing them
-one at a time.
+Rows 1-25 and 28-40 run against the domain directly, which is where the rules live; rows 26-27
+cover the formatting helpers in `src/lib/format.ts`. Rows 41-61 run against the route handlers,
+called as plain functions the way Next.js calls them — that is the only layer where a status code
+or a response envelope exists to get wrong. Rows 17-24 and 28-34 are regression tests: each covers
+a specific fix and fails if that fix is removed.
 
 | # | Scenario | Forces |
 |---|---|---|
@@ -33,7 +33,7 @@ one at a time.
 | 23 | Withdrawn listing | the 409 and the page both carry `alternatives[]` |
 | 24 | A hold entering its last two minutes | one `hold_expiring_notified`, carrying the deep link |
 | 25 | Checkout opened after the sales cutoff | `SALES_CLOSED`, rather than a hold that expired before it began |
-| 26 | Money formatting, every cent value to $20,000 | integer cents in, exact two decimals out, locale pinned |
+| 26 | Money formatting at the boundaries where its one division could round wrong | every cents place at five magnitudes up to $20,000, plus values near a binary rounding step; locale pinned |
 | 27 | Duration formatting across its boundaries | `1h` not `1h 0m`; never a negative duration |
 | 28 | Abandoned pending payment, then another fan buys | the sweep reconciles the timed-out hold; seat freed, not `SOLD_OUT` |
 | 29 | Charge confirmed *after* the timeout failed the session | `reconcile_conflict` + `refund_issued`; refund issued once, not twice |
@@ -42,36 +42,43 @@ one at a time.
 | 32 | Repeat create for one browser + listing | resumes the one hold (`hold_resumed_same_client`); seats not drained |
 | 33 | A different browser, same listing | gets its own hold — dedup is per (browser, listing), so buying two events still works |
 | 34 | Browser's hold expired, then it repeats | a dead hold is not resumed; a fresh one is created |
-| 35 | Create → resume → complete, three HTTP requests | `201`/`200`/`200`; one session, one order |
-| 36 | Every reply carries `session` + `serverNow` + `no-store` | asserted on every response the suite produces |
-| 37 | Resume reports the price change in the same reply | one request is enough to draw the screen |
-| 38 | `quantity: null` over HTTP | `400` — an absent quantity defaults, a present one never gets coerced |
-| 39 | `complete` with no `idempotencyKey` | `400` from the domain, not a silent charge |
-| 40 | Stale version, expired hold, second device | `409` `STALE_VERSION` / `EXPIRED` / `IN_PROGRESS_ELSEWHERE` |
-| 41 | Rehold when the seats are gone | `409 SOLD_OUT`, and the banner says so on both surfaces |
-| 42 | Declined, then the same attempt replayed | `402` both times — a replayed decline is never a `200` |
-| 43 | A charge landing after the pending timeout failed the session | `409 ALREADY_FAILED`, not a `200` carrying a `FAILED` session |
-| 44 | A body that is not JSON | a `4xx`, never a `500` |
-| 45 | Debug knobs under `NODE_ENV=production` | `404` from both handlers; the state is untouched |
-| 46 | Every unusable body shape — `null`, `[]`, `"str"`, `42`, garbage | `400`, never a `500`; `null` used to crash on property access |
-| 47 | A body over 16 KB | `400` before it is parsed, and nothing held |
-| 48 | `quantity` as `true`, `[5]`, `{}`, `Infinity` | `400` — recognised, not coerced; `"2"` still works, since forms send strings |
-| 49 | `listingId` as `["L1"]`, `123`, `{}` | `400` — `String(["L1"])` is `"L1"`, which is exactly the problem |
-| 50 | `surface` as anything unrecognised, anywhere | treated as absent; never written to the session or the event log |
-| 51 | `idempotencyKey` as `{}`, `[1,2]`, 201 chars | `400` — `String({})` collided every such caller onto one key |
-| 52 | `paymentToken` omitted | `400`; no default, because the default would charge a placeholder |
-| 53 | Unknown fields in an `accept-price` body | ignored; fields are named, not spread |
-| 54 | A `cid` cookie on `POST /api/sessions` | same-browser holds dedup over HTTP; a cookie-less curl request is not |
+| 35 | Releasing a hold on purpose | seats back immediately, not when the timer runs out |
+| 36 | Release, then start again at a different quantity | the reason the button exists: dedup returns the old hold until it is given up |
+| 37 | Release attempted while a charge is in flight | refused `IN_PROGRESS_ELSEWHERE`; the seats stay held |
+| 38 | Release attempted on a paid order | refused `ALREADY_COMPLETED`; sold seats never come back |
+| 39 | Release pressed twice | seats freed exactly once, not twice |
+| 40 | Release on a hold that just lapsed | the read inside it returns the seats; logged as a lapse, not a release |
+| 41 | Create → resume → complete, three HTTP requests | `201`/`200`/`200`; one session, one order |
+| 42 | Every reply carries `session` + `serverNow` + `no-store` | asserted on every response the suite produces |
+| 43 | Resume reports the price change in the same reply | one request is enough to draw the screen |
+| 44 | `quantity: null` over HTTP | `400` — an absent quantity defaults, a present one never gets coerced |
+| 45 | `complete` with no `idempotencyKey` | `400` from the domain, not a silent charge |
+| 46 | Stale version, expired hold, second device | `409` `STALE_VERSION` / `EXPIRED` / `IN_PROGRESS_ELSEWHERE` |
+| 47 | Rehold when the seats are gone | `409 SOLD_OUT`, and the banner says so on both surfaces |
+| 48 | Declined, then the same attempt replayed | `402` both times — a replayed decline is never a `200` |
+| 49 | A charge landing after the pending timeout failed the session | `409 ALREADY_FAILED`, not a `200` carrying a `FAILED` session |
+| 50 | A body that is not JSON | a `4xx`, never a `500` |
+| 51 | Debug knobs under `NODE_ENV=production` | `404` from both handlers; the state is untouched |
+| 52 | Every unusable body shape — `null`, `[]`, `"str"`, `42`, garbage | `400`, never a `500`; `null` used to crash on property access |
+| 53 | A body over 16 KB | `400` before it is parsed, and nothing held |
+| 54 | `quantity` as `true`, `[5]`, `{}`, `Infinity` | `400` — recognised, not coerced; `"2"` still works, since forms send strings |
+| 55 | `listingId` as `["L1"]`, `123`, `{}` | `400` — `String(["L1"])` is `"L1"`, which is exactly the problem |
+| 56 | `surface` as anything unrecognised, anywhere | treated as absent; never written to the session or the event log |
+| 57 | `idempotencyKey` as `{}`, `[1,2]`, 201 chars | `400` — `String({})` collided every such caller onto one key |
+| 58 | `paymentToken` omitted | `400`; no default, because the default would charge a placeholder |
+| 59 | Unknown fields in an `accept-price` body | ignored; fields are named, not spread |
+| 60 | A `cid` cookie on `POST /api/sessions` | same-browser holds dedup over HTTP; a cookie-less curl request is not |
+| 61 | `POST /api/sessions/:id/cancel` | `200` with the released session, `409` on a repeat and once a payment is in flight |
 
 ---
 
 ## Instrumentation
 
-Events are structured records with the session ID as the correlation ID across web, mobile and backend: `session_created{surface}`, `session_resumed{surface, fromSurface, ageMs}`, `price_change_accepted`, `payment_started`, `completed`, `session_failed{reason}`, `hold_expired`, `hold_expiring_notified{deepLink}`, `reconcile_conflict`, `refund_issued`. `GET /api/debug/events` dumps them.
+Events are structured records with the session ID as the correlation ID across web, mobile and backend: `session_created{surface}`, `session_resumed{surface, fromSurface, ageMs}`, `hold_resumed_same_client{clientId}`, `price_change_accepted`, `payment_started`, `completed`, `session_failed{reason}`, `hold_expired`, `hold_released_by_fan`, `hold_expiring_notified{deepLink}`, `reconcile_conflict`, `refund_issued`. `GET /api/debug/events` dumps them.
 
 `reconcile_conflict` is the one worth alerting on: it means a charge came back successful for a session something else had already failed, so a fan is owed a refund. It is rare by construction and silent without instrumentation, which is exactly the shape of bug that costs money for months.
 
-**The metric** is purchases per *fan who started checkout*, resumed vs. single-surface — not per session, since without continuity a fan starts a second session and per-session conversion undercounts the control. Also worth tracking: time-from-resume-to-complete, and the share of resumes that land on `EXPIRED` (a hold-window tuning signal).
+**The metric** is purchases per *fan who started checkout*, resumed vs. single-surface — not per session, since without continuity a fan starts a second session and per-session conversion undercounts the control. Also worth tracking: time-from-resume-to-complete, and the share of resumes that land on `EXPIRED` (a hold-window tuning signal — which is why a hold the fan deliberately released is logged as `hold_released_by_fan` rather than `hold_expired`, so giving up seats on purpose does not read as a window that was too short).
 
 **The honest test** needs a holdout: fans who resume are more motivated, so the raw comparison is biased upward. A feature flag that withholds resume links and notifications for a slice of fans is what gives a causal read.
 

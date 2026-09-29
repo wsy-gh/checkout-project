@@ -5,23 +5,18 @@ import { readJson, respond } from "@/lib/respond";
 type Ctx = { params: Promise<{ id: string }> };
 
 /**
- * POST /api/sessions/:id/complete
- *
- * Pay. The body carries four things that all matter:
+ * POST /api/sessions/:id/complete — pay. The body carries four things that all matter:
  *
  *   version         which version of the session this device was looking at
  *   priceVersion    which price it is agreeing to
  *   idempotencyKey  identifies this attempt, so a retry is not a second charge
- *   paymentToken    a stand-in for the provider's card token; never stored on the session
+ *   paymentToken    stands in for the provider's card token; never stored on the session
  *
- * The rules those feed are all in `complete` in src/checkout/service.ts, which is the file to read
- * to see how two devices pressing Pay at once is handled.
- *
- * Since nothing here coerces, the two version numbers arrive as `NaN` when they are missing or
- * nonsense, and every comparison against NaN is false — so a garbled request fails *closed*, on
- * `STALE_VERSION`, and never reaches a charge. The key and the token are passed through as-is for
- * the domain to validate, because running `String(...)` on them was itself the bug: it turned `{}`
- * into the literal key `"[object Object]"`, which every such caller then shared.
+ * The rules they feed are in `complete`. Nothing here coerces, so a missing or nonsense version
+ * arrives as NaN, every comparison with NaN is false, and a garbled request fails *closed* on
+ * STALE_VERSION without reaching a charge. The key and token pass through for the domain to
+ * validate, because `String(...)` on them was itself the bug: it turned `{}` into the literal key
+ * "[object Object]", shared by every such caller.
  */
 export async function POST(req: Request, { params }: Ctx) {
   const { id } = await params;

@@ -1,64 +1,43 @@
 import type { Session, Status } from "./types";
 
 /**
- * RULES THAT MUST BE TRUE OF EVERY SESSION, CHECKED ON EVERY WRITE
+ * Rules that must hold for every session, checked by `put` on every write. An impossible session
+ * would otherwise surface much later as a strange screen or a wrong count, leaving you to work
+ * backwards; here the offending write throws immediately, naming the session and the rule.
  *
- * An invariant is something that is true before a change and must still be true after it — for
- * example, "a completed session always has an order ID" or "a hold never outlasts the event".
- * Since a mistake in the state machine that produced an impossible session would otherwise show
- * up much later as a strange screen or a wrong number, forcing you to work backwards to find it,
- * this file collects those rules and `put` in src/checkout/service.ts runs them on every single
- * write — so the write that breaks a rule throws immediately, naming the session and the rule.
- * That is the difference between an afternoon of debugging and reading one line.
- *
- * These rules pay for themselves most in tests/invariants.test.ts, which throws hundreds of
- * random operations at the state machine and checks them after every one. Writing ordinary
- * assertions for a random sequence is impossible — you do not know what should have happened —
- * but these hold no matter what happened, so they serve as the assertion.
+ * They also serve as the assertion in tests/invariants.test.ts, which throws hundreds of random
+ * operations at the state machine: ordinary assertions are impossible for a random sequence
+ * because you do not know what should have happened, but these hold regardless.
  */
 export function assertInvariants(s: Session, now: number, salesCutoff: number): void {
   const must = (cond: unknown, msg: string) => {
     if (!cond) throw new Error(`Invariant violated on ${s.id} (${s.status}): ${msg}`);
   };
 
-  // Since each terminal state owns particular extra fields, these checks confirm that a session
-  // in a given status carries exactly what that status needs and nothing that belongs to another.
+  // Each status must carry exactly its own extra fields and none belonging to another status.
   if (s.status === "COMPLETED") must(s.orderId && s.paymentIntentId, "COMPLETED needs orderId + paymentIntentId");
   if (s.status !== "COMPLETED") must(!("orderId" in s), "only COMPLETED may carry orderId");
   if (s.status === "FAILED") must(s.failReason, "FAILED needs a reason");
-  // Since only a failed session should still be chasing a payment we could not resolve, the
-  // reference must not appear anywhere else; if it does, it is a leak from a botched transition,
-  // which `strip` in service.ts exists to prevent, and this catches the leak at the write.
+  // An unresolved intent anywhere but FAILED is a leak from a botched transition — the thing
+  // `strip` exists to prevent — and this catches it at the write.
   if (s.status !== "FAILED") must(!("unresolvedIntentId" in s), "only FAILED may carry unresolvedIntentId");
 
-  // Since a pending session is defined by having a charge to reconcile against, it must carry the
-  // intent that reconciliation will ask about.
   if (s.status === "PAYMENT_PENDING") must(s.paymentIntentId && s.pendingSince > 0, "PENDING needs an intent");
 
-  // A hold must never outlive the event's sales cutoff.
   must(s.holdExpiresAt <= salesCutoff, "hold outlives sales cutoff");
-
-  // The version counter must only ever be a non-negative integer.
   must(Number.isInteger(s.version) && s.version >= 0, "version must be a non-negative integer");
-
-  // No payment details may ever be stored on the session.
   must(!("paymentToken" in s) && !("card" in s), "payment details on session");
 
-  // `now` is accepted but deliberately not used to assert that an ACTIVE session is still within
-  // its deadline, which might look like the obvious rule to add here. Since being expired is
-  // something noticed on the next read rather than something that happens on a timer (see `get`
-  // in service.ts), a session sitting past its deadline that nobody has read yet is a completely
-  // normal state in this design, so asserting the deadline on write would make a correct state
-  // illegal. The parameter stays because it costs nothing and a future rule may want it.
+  // `now` is deliberately not used to assert that an ACTIVE session is still inside its deadline,
+  // which looks like the obvious rule to add. Expiry is noticed on the next read rather than on a
+  // timer, so a session sitting past its deadline that nobody has read is a normal state here, and
+  // asserting it on write would make a correct state illegal.
   void now;
 }
 
 /**
- * WHICH STATUS IS ALLOWED TO FOLLOW WHICH.
- *
- * Every status lists itself, because plenty of writes change other fields — a price being
- * accepted, an idempotency key being recorded — without moving the session to a new status. The
- * three ending states list only themselves, which is exactly what makes them endings.
+ * Which status may follow which. Every status lists itself, because many writes change other
+ * fields without moving status. The endings list only themselves, which is what makes them endings.
  */
 const MAY_FOLLOW: Record<Status, readonly Status[]> = {
   ACTIVE: ["ACTIVE", "PAYMENT_PENDING", "EXPIRED", "FAILED"],
@@ -69,29 +48,18 @@ const MAY_FOLLOW: Record<Status, readonly Status[]> = {
 };
 
 /**
- * TWO RULES ABOUT HOW A SESSION MAY *CHANGE*.
+ * The two rules that compare a session before a write with the session after it — which the type
+ * system cannot express, since it only ever sees one session at a time.
  *
- * Since the type system only ever sees one session at a time, it cannot express rules that
- * compare the before with the after, so those two rules are enforced here instead.
+ * Status only moves forward. This is load-bearing: `settle` decides a write is safe by asking "is
+ * this still PAYMENT_PENDING?", which only proves anything if a session that moved on can never
+ * move back. That is true of today's code but is not something today's code insists on, so a later
+ * feature — letting a declined session return to ACTIVE to try another card, say — would silently
+ * stop that check from protecting anything. Enforced here, such a change announces itself.
  *
- * FIRST: THE STATUS ONLY EVER MOVES FORWARD.
- *
- * This is quietly load-bearing. `settle` in service.ts decides whether a write is safe by asking
- * "is this session still waiting on a payment?", and that question only proves anything if a
- * session that has moved on can never move back. Today it cannot — but that is a fact about the
- * current code rather than something the code insists on, and facts like that go stale. If
- * someone later added a sensible-looking feature, say letting a declined session return to ACTIVE
- * so the fan can try another card, that check would silently stop protecting anything and the
- * double-release bug would return with no test failing. So the rule is written down and enforced
- * here, and that hypothetical change now announces itself the moment it is made.
- *
- * SECOND: A WRITE MUST ADVANCE THE VERSION.
- *
- * This catches the general form of the same bug. A write assembled from a copy of the session
- * taken *before* an `await` carries whatever version was current back then; if anything was
- * written in the meantime, the stored version has already moved past it, and this comparison
- * notices. It is verified to work: reintroducing the original bug now fails with
- * "Illegal write to cs_0001: FAILED -> COMPLETED" rather than silently inventing seats.
+ * A write must advance the version. This catches the general form of the same bug: a write
+ * assembled from a copy taken before an `await` carries the version from back then, and if
+ * anything was written meanwhile, the stored version has already moved past it.
  */
 export function assertTransition(prev: Session | undefined, next: Session): void {
   if (!prev) return;

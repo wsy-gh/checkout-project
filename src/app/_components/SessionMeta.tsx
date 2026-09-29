@@ -1,15 +1,10 @@
 import type { Session, Status, Surface } from "@/checkout/types";
 
 /**
- * A DEVELOPER INSPECTOR, SHOWN ON BOTH CHECKOUT SURFACES.
- *
- * Since the interesting behaviour of this app is server-side and otherwise invisible — you cannot
- * tell by looking at a checkout page that the two surfaces share one record, that stale writes are
- * refused, or that the screen is chosen by status rather than by whichever button you pressed —
- * this panel surfaces the three fields that are the entire contract between a device and the
- * backend, so the demo becomes something you can verify rather than something you take on faith.
- * It is not product UI; a real fan would never see it. Each field says what it is and what to do to
- * watch it work.
+ * A developer inspector, not product UI — a real fan would never see it. The interesting behaviour
+ * here is server-side and otherwise invisible: you cannot tell by looking that two surfaces share
+ * one record or that stale writes are refused. This shows the three fields that are the whole
+ * contract between a device and the backend, so the demo can be verified rather than taken on faith.
  */
 
 /** What each status actually means, since the bare word is not much help on its own. */
