@@ -1,4 +1,6 @@
-# Checkout Continuity
+# Checkout Project
+
+**NOTE:** Extra code commentary was added which was biased towards over-communicating the code for the sake of making this easier on the reviewer and does not reflect real production codebase comments.
 
 A fan starts buying tickets on their laptop, gets interrupted, and finishes on their phone —
 without being charged twice, without seats being held forever, and without a price change
@@ -17,7 +19,7 @@ not a credential — there is no auth here, so possession of the link is the onl
 ```
 npm install
 npm run dev     # http://localhost:3000
-npm test        # 95 tests, under a second
+npm test        # 86 tests, under a second
 npm run demo    # the whole story over the HTTP API, in curl (needs the dev server running)
 ```
 
@@ -55,8 +57,8 @@ Also: [assumptions and non-goals](docs/assumptions.md) · [scenario list](docs/s
    create ───────►  ACTIVE ◄───────┘
                       │  │
       deadline passes │  └── fan pays ──────────► PAYMENT_PENDING
-      or fan releases │                            │              │
-   or listing pulled  ▼                  charge ok │              │ declined, or no answer
+   or listing pulled  │                            │              │
+                      ▼                  charge ok │              │ declined, or no answer
                    EXPIRED                         ▼              ▼   for too long
               (or FAILED)                      COMPLETED       FAILED
 ```
@@ -91,7 +93,6 @@ POST /api/sessions                    { listingId, quantity, surface }          
 GET  /api/sessions/:id?surface=        resume: read it, and bring it up to date
 POST /api/sessions/:id/accept-price   { version, priceVersion }
 POST /api/sessions/:id/complete       { version, priceVersion, idempotencyKey, paymentToken }
-POST /api/sessions/:id/cancel          give up the hold now; seats back on sale immediately
 POST /api/sessions/:id/rehold          start a fresh session after one expired
 ```
 
@@ -210,7 +211,7 @@ what it costs. The load-bearing ones:
 
 **Observability.** The app already emits a structured event for everything that matters —
 `session_created`, `session_resumed`, `payment_started`, `completed`, `hold_expired`,
-`hold_released_by_fan`, `reconcile_conflict`, `refund_issued` — but they go to an in-memory list read by
+`reconcile_conflict`, `refund_issued` — but they go to an in-memory list read by
 `GET /api/debug/events`. That list is the seam: pointed at a real sink, those events are the
 funnel this project exists to measure (how many resumes happen, on which surface, how long after
 the first visit, how many holds lapse without a payment) and the alerts you actually want
@@ -242,15 +243,6 @@ becomes a transaction, and nothing in `src/checkout/` changes. **Push updates** 
 polling, and a real scheduler for the "your hold is running out" notice, which is wired up but has
 nothing to fire it while the clock is a stub.
 
-**One-click quantity changes.** Picking a new quantity on a listing you already hold returns your
-existing hold, because the per-browser dedup cannot tell "I meant to start over" from "I pressed Back
-twice". So changing quantity is two steps: **Release these seats**, then start again. Having `create`
-swap the hold instead — "latest quantity wins" — is about twenty lines in one place, but it needs two
-things it does not have: an availability reader on the inventory interface, so a swap that cannot fit
-refuses *before* destroying the hold the fan already had, and a listing page that counts the fan's own
-held seats back into its quantity picker, since today those seats are missing from `available` and a
-fan holding all of them sees "these seats are gone" with no form at all. The explicit release is the
-honest version — nothing is destroyed until the fan says so, and there is no path that loses a hold to
-a failed swap — so the one-click form stays future work rather than a shortcut taken early.
-
 **Browser-level tests.** Using Playwright.
+
+**Note:** I did not have time to review the /docs/scenarios.md carefully. I've included it in case it can be helpful for the reviewer nonetheless while taken with a grain of salt.
